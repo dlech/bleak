@@ -77,7 +77,11 @@ class BleakScannerDotNet(BaseBleakScanner):
         self._signal_strength_filter = kwargs.get("SignalStrengthFilter", None)
         self._advertisement_filter = kwargs.get("AdvertisementFilter", None)
 
-    def _received_handler(self, sender, event_args):
+    def _received_handler(
+        self,
+        sender: BluetoothLEAdvertisementWatcher,
+        event_args: BluetoothLEAdvertisementReceivedEventArgs,
+    ):
         if sender == self.watcher:
             logger.debug("Received {0}.".format(_format_event_args(event_args)))
             if (
@@ -106,7 +110,11 @@ class BleakScannerDotNet(BaseBleakScanner):
 
             self._callback(advertisement_data)
 
-    def _stopped_handler(self, sender, e):
+    def _stopped_handler(
+        self,
+        sender: BluetoothLEAdvertisementWatcher,
+        e: BluetoothLEAdvertisementWatcherStoppedEventArgs,
+    ):
         if sender == self.watcher:
             logger.debug(
                 "{0} devices found. Watcher status: {1}.".format(
@@ -118,17 +126,23 @@ class BleakScannerDotNet(BaseBleakScanner):
         self.watcher = BluetoothLEAdvertisementWatcher()
         self.watcher.ScanningMode = self._scanning_mode
 
+        event_loop = asyncio.get_event_loop()
+
         self._received_token = self.watcher.add_Received(
             TypedEventHandler[
                 BluetoothLEAdvertisementWatcher,
                 BluetoothLEAdvertisementReceivedEventArgs,
-            ](self._received_handler)
+            ](
+                lambda s, e: event_loop.call_soon_threadsafe(
+                    self._received_handler, s, e
+                )
+            )
         )
         self._stopped_token = self.watcher.add_Stopped(
             TypedEventHandler[
                 BluetoothLEAdvertisementWatcher,
                 BluetoothLEAdvertisementWatcherStoppedEventArgs,
-            ](self._stopped_handler)
+            ](lambda s, e: event_loop.call_soon_threadsafe(self._stopped_handler, s, e))
         )
 
         if self._signal_strength_filter is not None:
