@@ -144,4 +144,7 @@ class BlueZNotifyArgs(TypedDict, total=False):
     compatibility with most BLE devices.
 
     see :ref:`linux-start-notify` for more details.
+
+    .. versionchanged:: 3.0.2
+        The default value was changed from ``False`` to ``True``.
     """
