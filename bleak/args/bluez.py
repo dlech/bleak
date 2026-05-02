@@ -93,7 +93,7 @@ class BlueZScannerArgs(TypedDict, total=False):
          use udev to look up the name based on other properties like the USB
          vendor and product ID.
 
-    .. versionadded:: unreleased
+    .. versionadded:: 3.0
     """
 
     filters: BlueZDiscoveryFilters
@@ -115,7 +115,7 @@ class BlueZClientArgs(TypedDict, total=False):
     """
     :class:`bleak.BleakClient` args that are specific to the BlueZ backend.
 
-    .. versionadded:: unreleased
+    .. versionadded:: 3.0
     """
 
     adapter: str
@@ -139,11 +139,12 @@ class BlueZNotifyArgs(TypedDict, total=False):
 
     use_start_notify: bool
     """
-    If true, use the "StartNotify" D-Bus method instead of "AcquireNotify" to
-    subscribe to notifications.
+    If false, use the "AcquireNotify" D-Bus method instead of "StartNotify" to
+    subscribe to notifications. The default is to use "StartNotify" for better
+    compatibility with most BLE devices.
 
-    This is needed in rare cases to work around BlueZ quirks. For example, some
-    peripherals may send notifications immediately after writing to the CCCD
-    descriptor, before the write response is sent. In this case, "AcquireNotify"
-    will miss the notification, whereas "StartNotify" will work correctly.
+    see :ref:`linux-start-notify` for more details.
+
+    .. versionchanged:: 3.0.2
+        The default value was changed from ``False`` to ``True``.
     """

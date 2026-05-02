@@ -10,6 +10,13 @@ and this project adheres to `Semantic Versioning <https://semver.org/spec/v2.0.0
 `Unreleased`_
 =============
 
+`3.0.2`_ (2026-05-02)
+=====================
+
+Changed
+-------
+* Changed default value of ``BlueZNotifyArgs.use_start_notify`` to ``False``. Fixes #1951.
+
 `3.0.1`_ (2026-03-25)
 =====================
 
@@ -1209,7 +1216,8 @@ Fixed
 * Bleak created.
 
 
-.. _Unreleased: https://github.com/hbldh/bleak/compare/v3.0.1...develop
+.. _Unreleased: https://github.com/hbldh/bleak/compare/v3.0.2...develop
+.. _3.0.2: https://github.com/hbldh/bleak/compare/v3.0.1...v3.0.2
 .. _3.0.1: https://github.com/hbldh/bleak/compare/v3.0.0...v3.0.1
 .. _3.0.0: https://github.com/hbldh/bleak/compare/v2.1.1...v3.0.0
 .. _2.1.1: https://github.com/hbldh/bleak/compare/v2.1.0...v2.1.1

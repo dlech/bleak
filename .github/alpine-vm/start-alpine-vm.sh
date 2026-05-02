@@ -21,7 +21,7 @@ VM_BUILD_DIR="$REPO_ROOT/.alpine-vm-build"
 VM_IMAGE="$VM_BUILD_DIR/alpine.qcow2"
 VM_SSH_PORT="2222"
 VM_CONSOLE_LOG="vm-console.log"
-VM_PACKAGES="bluez poetry openssh uv"
+VM_PACKAGES="bluez openssh uv"
 
 # Colors for output
 GREEN='\033[0;32m'
@@ -159,7 +159,7 @@ boot_vm() {
     
     # Start QEMU with serial console output to file and 9p filesystem sharing
     qemu-system-x86_64 \
-        -m 512 \
+        -m 2G \
         -smp 2 \
         $KVM_FLAGS \
         -display none \

@@ -20,26 +20,23 @@ jobs:
         python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@v4
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
-        id: py
+
+      - name: Install the latest version of uv
+        uses: astral-sh/setup-uv@v6
         with:
+          version: "latest"
           python-version: ${{ matrix.python-version }}
-      - name: Create virtual environment
-        run: pipx run poetry env use '${{ steps.py.outputs.python-path }}'
-      - name: Install dependencies
-        # work around https://github.com/python-poetry/poetry/issues/7161
-        env:
-          SYSTEM_VERSION_COMPAT: 0
-        run: pipx run poetry install --only main,test
+
       - name: Test with pytest
-        run: pipx run poetry run pytest -v --cov-report=xml --junitxml=junit.xml -o junit_family=legacy
+        run: uv run pytest -v --cov-report=xml --junitxml=junit.xml -o junit_family=legacy
+
       - name: Upload coverage reports to Codecov
         uses: codecov/codecov-action@v5
         with:
           report_type: coverage
           flags: ${{ matrix.os }}-py${{ matrix.python-version }}
           token: ${{ secrets.CODECOV_TOKEN }}
+
       - name: Upload test results to Codecov
         if: ${{ !cancelled() }}
         uses: codecov/codecov-action@v5
@@ -47,16 +44,24 @@ jobs:
           report_type: test_results
           flags: ${{ matrix.os }}-py${{ matrix.python-version }}
           token: ${{ secrets.CODECOV_TOKEN }}
-      - name: Type checking
-        # We don't do this in the lint job because we have conditionals
-        # on both the platform and the Python version in the code, so we
-        # need to check each matrix combination.
-        run: |
-          pipx run poetry run pip install pyright
-          pipx run poetry run pyright
-          pipx run poetry run pip install mypy
-          pipx run poetry run mypy -p bleak -p tests -p examples
 
+      # We don't do type checking in the lint job because we have conditionals
+      # on both the platform and the Python version in the code, so we
+      # need to check each matrix combination.
+      #
+      # We want always the latest version of pyright and mypy, to catch
+      # any breakage as soon as we can. That is why they are not dev
+      # dependencies in the pyproject.toml, because that would lock them to
+      # a specific version. Instead we install the latest version as tool.
+      - name: Type checking (pyright)
+        run: |
+          uv tool install pyright
+          uv run pyright
+
+      - name: Type checking (mypy)
+        run: |
+          uv tool install mypy
+          uv run mypy -p bleak -p tests -p examples
 
   integration_tests_bluez:
     name: "BlueZ integration tests"
@@ -78,23 +83,15 @@ jobs:
       - name: Build and boot Alpine VM
         run: ./.github/alpine-vm/start-alpine-vm.sh
 
-      - name: Install Python and dependencies in VM
-        run: |
-          ./.github/alpine-vm/vm-ssh.sh '
-            bluetoothctl --version
-            uv python install ${{ matrix.python-version }}
-            uv python pin ${{ matrix.python-version }}
-            poetry env use ${{ matrix.python-version }}
-            poetry install --only main,test
-          '
-
       - name: Run pytest in VM
         run: |
           ./.github/alpine-vm/vm-ssh.sh '
+            bluetoothctl --version
+            export UV_PROJECT_ENVIRONMENT=../.venv  # We are in an mounted folder, so to speed things up put the venv outside the mount
             export FORCE_COLOR=1
             export CI=true
             export GITHUB_ACTIONS=true
-            poetry run pytest -v tests --bleak-bluez-vhci -v --cov-report=xml --junitxml=junit.xml -o junit_family=legacy
+            uv run --python ${{ matrix.python-version }} pytest -v tests --bleak-bluez-vhci -v --cov-report=xml --cov-report=html:../.htmlcov --junitxml=junit.xml -o junit_family=legacy -o cache_dir=../.pytest_cache
           '
 
       - name: Upload coverage reports to Codecov
