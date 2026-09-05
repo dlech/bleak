@@ -109,16 +109,33 @@ def check_for_packet_loss(hci_transport: Transport) -> None:
     handle and closing it is what destroys the radio.
     """
     # `device` belongs to winvhci's own Transport subclass, not to bumble's
-    # Transport, so it is fetched defensively rather than typed: an older
-    # winvhci without the stats IOCTL should skip this check, not crash the
-    # teardown of every test.
+    # Transport, so it is fetched defensively rather than typed.
     device = getattr(hci_transport, "device", None)
     stats = getattr(device, "stats", None)
     if stats is None:
         logger.info("winvhci client has no stats support; skipping the loss check")
         return
 
-    s = stats()
+    # The CLIENT having a stats() method does not mean the installed DRIVER
+    # implements the IOCTL behind it, and those two are versioned separately -
+    # the client comes from the pinned git tag, the driver from a release the
+    # workflow installs. Guarding only the client caught nothing: a 1.1.1
+    # client against a 1.0.2 driver turned every module's teardown into an
+    # ERROR_INVALID_FUNCTION error, 17 of them, which is a far worse outcome
+    # than not knowing the drop count.
+    #
+    # This check is a diagnostic aid, so degrading to "cannot tell" is the
+    # right failure mode. A real drop still fails the run whenever the counters
+    # can be read at all.
+    try:
+        s = stats()
+    except Exception:
+        logger.warning(
+            "could not read winvhci stats; skipping the loss check. The "
+            "installed driver is probably older than the winvhci client.",
+            exc_info=True,
+        )
+        return
     logger.info(
         "winvhci: %d packets to the stack, %d to the client, peak depths %d/%d/%d",
         s.writes_total,
