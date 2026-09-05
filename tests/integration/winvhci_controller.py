@@ -64,6 +64,11 @@ async def wait_for_adapter_to_go(address: str, timeout: float = 30.0) -> None:
             or adapter.bluetooth_address != wanted
         ):
             return
+        # A cached entry for a radio that is already gone counts as gone.
+        # Without this the wait burns its full timeout whenever Windows is slow
+        # to forget, which is exactly when it is least helpful.
+        if not await _adapter_is_live(adapter):
+            return
         await asyncio.sleep(0.25)
 
     logger.warning(
@@ -71,6 +76,33 @@ async def wait_for_adapter_to_go(address: str, timeout: float = 30.0) -> None:
         address,
         timeout,
     )
+
+
+async def _adapter_is_live(adapter: BluetoothAdapter) -> bool:
+    """Whether an adapter actually backs a radio that still exists.
+
+    get_default_async can return a CACHED adapter for a radio Windows has
+    already removed, and it does not always catch up quickly - a stale entry
+    was observed surviving longer than a 30 s wait. Nothing about the adapter
+    object itself gives that away: the address and device id are exactly what
+    they were when the radio was real.
+
+    Using it is what gives it away, and this asks the same question Bleak's
+    scanner asks a moment later:
+
+        radio = await adapter.get_radio_async()
+        OSError: [WinError -2147023728] Element not found.
+
+    which is ERROR_NOT_FOUND for the radio behind the adapter. Better to find
+    that here, while still waiting, than to have every scanner test fail at a
+    line that looks like a Bleak problem.
+    """
+    try:
+        radio = await adapter.get_radio_async()
+    except OSError as error:
+        logger.debug("adapter %s is stale: %s", adapter.device_id, error)
+        return False
+    return radio is not None  # pyright: ignore[reportUnnecessaryComparison]
 
 
 async def current_adapter_id(address: str) -> str | None:
@@ -144,10 +176,12 @@ async def wait_for_adapter(
             continue
 
         if adapter.bluetooth_address == wanted:
-            if adapter.device_id != exclude_device_id:
+            if adapter.device_id != exclude_device_id and await _adapter_is_live(
+                adapter
+            ):
                 logger.info("adapter %s is up as %s", address, adapter.device_id)
                 return adapter
-            # Ours by address, but it is the one that was already here.
+            # Either the one that was already here, or a stale cache entry.
             await asyncio.sleep(0.25)
             continue
 
