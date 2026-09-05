@@ -84,45 +84,12 @@ async def bumble_peripheral(hci_transport: Transport) -> Device:
     return create_bumble_peripheral(hci_transport)
 
 
-def generate_peripheral_address() -> Address:
-    """A fresh address for a test peripheral.
-
-    UNIQUE per peripheral, deliberately: the services differ between test
-    modules and between runs, and reusing an address invites the OS to answer
-    from a stale GATT cache. That is why this is generated rather than fixed.
-
-    PUBLIC rather than random static, and that part is Windows-specific. The
-    symptoms it addresses were discovery returning nothing for a peer that was
-    advertising, and connecting by address failing with
-
-        FileNotFoundError: [WinError -2147024894] The system cannot find the
-        file specified
-
-    which is Windows saying it has no record of the device rather than
-    anything about a file. The theory is that Windows keys its record of a
-    device on address *and* address type and does not retain a random one the
-    way it retains a public one, so a peer that only ever appears at a random
-    address stays unknown to it. BlueZ shows neither symptom, which is what
-    makes an OS-level difference the likely explanation rather than anything
-    in the peripheral or the driver.
-
-    Calling that a theory rather than a fact is deliberate: it is inferred
-    from the symptoms and from BlueZ being unaffected, not from Windows
-    documentation saying so.
-
-    A simulated peripheral claiming a public address it does not own is fine:
-    nothing here is on air, and the address is thrown away with the test.
-    """
-    return Address(
-        str(Address.generate_static_address()), Address.PUBLIC_DEVICE_ADDRESS
-    )
-
-
 def create_bumble_peripheral(hci_transport: Transport) -> Device:
     """Create a BLE peripheral device with bumble."""
     config = DeviceConfiguration(
         name="Bleak",
-        address=generate_peripheral_address(),
+        # use random static address to avoid device caching issues, when characteristics change between test runs
+        address=Address.generate_static_address(),
         advertising_interval_min=200,
         advertising_interval_max=200,
     )
