@@ -39,19 +39,91 @@ def _address_to_int(address: str) -> int:
     return int(address.replace(":", ""), 16)
 
 
-async def wait_for_adapter(address: str, timeout: float = 15.0) -> BluetoothAdapter:
+async def wait_for_adapter_to_go(address: str, timeout: float = 30.0) -> None:
+    """Wait until no Bluetooth adapter reports our controller's address.
+
+    Needed BEFORE creating a radio, and not optional. get_default_async keeps
+    returning the previous radio's adapter until Windows has finished removing
+    it, so a new adapter cannot become the default while the old one is still
+    there. Skipping this and merely waiting for a different device id below
+    does not work: it waits out the full timeout and then raises, which was
+    measured at 56 errors per run against none with this in place.
+
+    Not an error if the wait times out. A developer machine may have a real
+    adapter, and refusing to run at all would be worse than running with a
+    warning - the tests themselves will say soon enough.
     """
-    Wait for Windows to bring up a Bluetooth adapter for our controller.
+    wanted = _address_to_int(address)
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+
+    while loop.time() < deadline:
+        adapter = await BluetoothAdapter.get_default_async()
+        if (
+            adapter is None  # pyright: ignore[reportUnnecessaryComparison]
+            or adapter.bluetooth_address != wanted
+        ):
+            return
+        await asyncio.sleep(0.25)
+
+    logger.warning(
+        "an adapter at %s is still present after %.0fs; starting anyway",
+        address,
+        timeout,
+    )
+
+
+async def current_adapter_id(address: str) -> str | None:
+    """The device id of the adapter currently at `address`, if any.
+
+    Captured before a new radio is created, so :func:`wait_for_adapter` can
+    tell the new one from whatever was there before.
+    """
+    adapter = await BluetoothAdapter.get_default_async()
+    if adapter is None:  # pyright: ignore[reportUnnecessaryComparison]
+        return None
+    if adapter.bluetooth_address != _address_to_int(address):
+        return None
+    return adapter.device_id
+
+
+async def wait_for_adapter(
+    address: str, exclude_device_id: str | None = None, timeout: float = 30.0
+) -> BluetoothAdapter:
+    """
+    Wait for Windows to bring up a Bluetooth adapter for OUR radio.
 
     This is the counterpart of the BlueZ path's InterfacesAdded wait, and it
     polls rather than subscribing because there is no "adapter added" event on
     BluetoothAdapter; a DeviceWatcher would be a great deal more machinery for
     a fixture that runs once.
 
+    `exclude_device_id` is what makes it correct across repeated use, and
+    matching on address alone was a real bug rather than a theoretical one.
+    Every transport this suite opens gives its controller the same address, so
+    a stale adapter from the previous test satisfied an address-only match
+    instantly - and the fixture then ran against a radio that was being torn
+    down. One module alone always passed; the whole suite, run twice back to
+    back with no changes, gave 54 errors and then none.
+
+    The device id is what identifies a radio instance, and it does change:
+
+        \\\\?\\winvhci#radio#1&79f5d87&1a&97#{92383b0e-...}
+        \\\\?\\winvhci#radio#1&79f5d87&1a&98#{92383b0e-...}
+
+    This works WITH wait_for_adapter_to_go and does not replace it, which is
+    worth stating because replacing it was tried and was much worse - 56 errors
+    a run against none. A new adapter cannot become the default while the
+    previous one is still present, so excluding the old id without first
+    waiting for it to go just waits out the timeout and raises.
+
+    Measured timings, for anyone tempted to tune this: a new adapter appears
+    about 0.3 s after the radio is created, and the old one usually vanishes
+    the instant the handle closes, though it can linger a few seconds.
+
     There is deliberately no power-on step. BlueZ needs one, and it doubles as
     the signal that the adapter is fully configured. Windows brings the radio up
-    on its own as BthPort initialises, so what has to be waited for is only that
-    it finished - and get_default_async() returning our address is that.
+    on its own as BthPort initializes.
     """
     wanted = _address_to_int(address)
     loop = asyncio.get_running_loop()
@@ -72,12 +144,16 @@ async def wait_for_adapter(address: str, timeout: float = 15.0) -> BluetoothAdap
             continue
 
         if adapter.bluetooth_address == wanted:
-            logger.info("adapter %s is up", address)
-            return adapter
+            if adapter.device_id != exclude_device_id:
+                logger.info("adapter %s is up as %s", address, adapter.device_id)
+                return adapter
+            # Ours by address, but it is the one that was already here.
+            await asyncio.sleep(0.25)
+            continue
 
-        # A real radio on a developer machine, or a stale one. Worth recording,
-        # because otherwise every test fails against the wrong adapter for no
-        # visible reason.
+        # A real radio on a developer machine. Worth recording, because
+        # otherwise every test fails against the wrong adapter for no visible
+        # reason.
         last_seen = adapter.bluetooth_address
         await asyncio.sleep(0.25)
 
@@ -88,40 +164,9 @@ async def wait_for_adapter(address: str, timeout: float = 15.0) -> BluetoothAdap
             f"Another Bluetooth adapter is present and Windows prefers it."
         )
     raise RuntimeError(
-        f"no Bluetooth adapter appeared within {timeout}s. The winvhci driver "
-        f"may not be installed, or Windows did not finish bringing the radio up "
-        f"- see https://github.com/dlech/windows-vhci-driver"
-    )
-
-
-async def wait_for_adapter_to_go(address: str, timeout: float = 30.0) -> None:
-    """Wait until no Bluetooth adapter reports our controller's address.
-
-    The counterpart of :func:`wait_for_adapter`, and needed for the same reason
-    that function cannot stand alone: it matches on address, and every module
-    in this suite uses the same one, so it cannot tell a freshly created radio
-    from the previous module's radio still being removed.
-
-    Not an error if the wait times out. A developer machine could have a real
-    adapter, and refusing to run at all would be a worse outcome than running
-    with a warning - the tests themselves will say soon enough.
-    """
-    wanted = _address_to_int(address)
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-
-    while loop.time() < deadline:
-        adapter = await BluetoothAdapter.get_default_async()
-        if (
-            adapter is None or adapter.bluetooth_address != wanted
-        ):  # pyright: ignore[reportUnnecessaryComparison]
-            return
-        await asyncio.sleep(0.25)
-
-    logger.warning(
-        "an adapter at %s is still present after %.0fs; starting anyway",
-        address,
-        timeout,
+        f"no new Bluetooth adapter appeared within {timeout}s. The winvhci "
+        f"driver may not be installed, or Windows did not finish bringing the "
+        f"radio up - see https://github.com/dlech/windows-vhci-driver"
     )
 
 
@@ -214,22 +259,19 @@ async def open_winvhci_bluetooth_controller_link() -> AsyncGenerator[LocalLink, 
     Open a local link (virtual RF connection) to a bumble Bluetooth controller
     that is connected to the Windows Bluetooth stack through the winvhci driver.
     """
-    # Wait for the PREVIOUS module's radio to finish going away before asking
-    # for a new one.
+    # Which adapter, if any, is already here - captured BEFORE the radio is
+    # created, so the wait below can tell the new one from a leftover.
     #
-    # Closing the device handle destroys the radio, but Windows does not finish
-    # with it immediately: removing the node unloads BthPort's whole stack above
-    # it, which takes several seconds. Every module in this suite opens its own
-    # transport, so without this a module can start while the last one's radio
-    # is still being torn down.
-    #
-    # wait_for_adapter cannot catch that on its own, and this is the part worth
-    # spelling out: it matches on the controller's address, and every module
-    # uses the SAME address. A stale adapter therefore satisfies it instantly,
-    # so the fixture proceeds against a radio that is on its way out, and the
-    # tests fail in whatever way that particular moment happens to produce.
-    # Running one module alone always passed; running the suite gave anything
-    # from 0 to 54 errors on identical invocations.
+    # Every transport this suite opens gives its controller the same address,
+    # and closing a handle destroys its radio without Windows finishing with it
+    # immediately. So an address-only match could be satisfied by the previous
+    # test's adapter, and the fixture would run against a radio being torn
+    # down.
+    previous_adapter_id = await current_adapter_id(WINVHCI_CONTROLLER_ADDRESS)
+
+    # And wait for it to actually go. A new adapter cannot become the
+    # default while the previous one is still present, so the identity check
+    # below cannot stand on its own - measured, at 56 errors a run.
     await wait_for_adapter_to_go(WINVHCI_CONTROLLER_ADDRESS)
 
     # Opening the device is what creates the radio, and closing it is what
@@ -247,7 +289,7 @@ async def open_winvhci_bluetooth_controller_link() -> AsyncGenerator[LocalLink, 
         # each show up as the Windows stack simply stopping mid-bring-up. See
         # winvhci.bumble_compat for the detail; briefly, bumble does not
         # implement the BR/EDR configuration commands Windows sends, and one
-        # "Unknown HCI Command" reply makes BthPort restart initialisation
+        # "Unknown HCI Command" reply makes BthPort restart initialization
         # forever.
         windows_controller = WindowsCompatController(
             "BLEAK-TEST-WINVHCI",
@@ -261,7 +303,9 @@ async def open_winvhci_bluetooth_controller_link() -> AsyncGenerator[LocalLink, 
         # after Read_Local_Supported_Features when it sees that.
         apply_dual_mode(windows_controller)
 
-        await wait_for_adapter(WINVHCI_CONTROLLER_ADDRESS)
+        await wait_for_adapter(
+            WINVHCI_CONTROLLER_ADDRESS, exclude_device_id=previous_adapter_id
+        )
 
         # Baseline AFTER bring-up: the counters are cumulative for the life
         # of the device node, so without this each module inherits every
