@@ -130,13 +130,38 @@ async def configure_and_power_on_bumble_peripheral(
     await bumble_peripheral.start_advertising()
 
 
+#: How many times :func:`find_ble_device` restarts the scan before giving up.
+#:
+#: One scan is not evidence of absence. Windows in particular can answer a
+#: discovery request out of a cache that a background scanner fills on its own
+#: schedule, returning nothing while the peer is advertising perfectly well -
+#: which is why bleak's own examples restart their scans periodically. A single
+#: attempt made every integration test on Windows fail at setup with "failed to
+#: discover device, is Bumble working?", and Bumble was working.
+#:
+#: Restarting is not the same as scanning for longer: the point is to make the
+#: backend begin a fresh scan, not to wait longer on one that may never have
+#: really started.
+FIND_DEVICE_ATTEMPTS = 3
+
+
 async def find_ble_device(bumble_peripheral: Device) -> BLEDevice:
     """Find the BLE device corresponding to the bumble peripheral."""
-    device = await BleakScanner.find_device_by_name(bumble_peripheral.name)
-    if device is None:
-        raise RuntimeError("failed to discover device, is Bumble working?")
+    for attempt in range(1, FIND_DEVICE_ATTEMPTS + 1):
+        device = await BleakScanner.find_device_by_name(bumble_peripheral.name)
+        if device is not None:
+            return device
 
-    return device
+        if attempt < FIND_DEVICE_ATTEMPTS:
+            print(
+                f"scan {attempt}/{FIND_DEVICE_ATTEMPTS} did not find "
+                f"{bumble_peripheral.name!r}; restarting the scan",
+                flush=True,
+            )
+
+    raise RuntimeError(
+        f"failed to discover device in {FIND_DEVICE_ATTEMPTS} scans, is Bumble working?"
+    )
 
 
 _P = ParamSpec("_P")
