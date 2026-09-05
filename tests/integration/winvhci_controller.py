@@ -94,7 +94,35 @@ async def wait_for_adapter(address: str, timeout: float = 15.0) -> BluetoothAdap
     )
 
 
-def check_for_packet_loss(hci_transport: Transport) -> None:
+def read_stats(hci_transport: Transport):
+    """The driver's packet counters, or None if they cannot be read.
+
+    `device` belongs to winvhci's own Transport subclass rather than to
+    bumble's, so it is fetched defensively. And the CLIENT having a stats()
+    method does not mean the installed DRIVER implements the IOCTL behind it:
+    those are versioned separately - the client comes from the pinned git
+    tag, the driver from a release the workflow installs. A 1.1.1 client
+    against a 1.0.2 driver turned every teardown into an
+    ERROR_INVALID_FUNCTION error, which is a far worse outcome than not
+    knowing the drop count.
+    """
+    device = getattr(hci_transport, "device", None)
+    stats = getattr(device, "stats", None)
+    if stats is None:
+        logger.info("winvhci client has no stats support")
+        return None
+    try:
+        return stats()
+    except Exception:
+        logger.warning(
+            "could not read winvhci stats. The installed driver is probably "
+            "older than the winvhci client.",
+            exc_info=True,
+        )
+        return None
+
+
+def check_for_packet_loss(hci_transport: Transport, baseline) -> None:
     """
     Fail if the driver lost a packet while the tests were running.
 
@@ -108,33 +136,8 @@ def check_for_packet_loss(hci_transport: Transport) -> None:
     Read before the transport closes, since the counters live behind the device
     handle and closing it is what destroys the radio.
     """
-    # `device` belongs to winvhci's own Transport subclass, not to bumble's
-    # Transport, so it is fetched defensively rather than typed.
-    device = getattr(hci_transport, "device", None)
-    stats = getattr(device, "stats", None)
-    if stats is None:
-        logger.info("winvhci client has no stats support; skipping the loss check")
-        return
-
-    # The CLIENT having a stats() method does not mean the installed DRIVER
-    # implements the IOCTL behind it, and those two are versioned separately -
-    # the client comes from the pinned git tag, the driver from a release the
-    # workflow installs. Guarding only the client caught nothing: a 1.1.1
-    # client against a 1.0.2 driver turned every module's teardown into an
-    # ERROR_INVALID_FUNCTION error, 17 of them, which is a far worse outcome
-    # than not knowing the drop count.
-    #
-    # This check is a diagnostic aid, so degrading to "cannot tell" is the
-    # right failure mode. A real drop still fails the run whenever the counters
-    # can be read at all.
-    try:
-        s = stats()
-    except Exception:
-        logger.warning(
-            "could not read winvhci stats; skipping the loss check. The "
-            "installed driver is probably older than the winvhci client.",
-            exc_info=True,
-        )
+    s = read_stats(hci_transport)
+    if s is None or baseline is None:
         return
     logger.info(
         "winvhci: %d packets to the stack, %d to the client, peak depths %d/%d/%d",
@@ -145,10 +148,31 @@ def check_for_packet_loss(hci_transport: Transport) -> None:
         s.pending_data_peak,
     )
 
-    if s.drops_no_client or s.drops_alloc_failed:
+    # Only allocation failures are a defect. The driver documents the split:
+    # "a client that vanished mid-flight is expected, a failed allocation is
+    # not". DropsNoClient counts packets the Bluetooth stack produced after the
+    # handle closed, which is exactly what every teardown here does - the radio
+    # is destroyed by closing the device, and BthPort does not stop the instant
+    # that happens.
+    #
+    # Asserting on it against zero was wrong twice over: it flags an expected
+    # race as a defect, and the counters are cumulative for the life of the
+    # device node, so every module also inherited every earlier module's
+    # teardown. The result was a tidy 1, 2, 3, 4, 5 climb across modules and 16
+    # spurious errors.
+    lost = s.drops_alloc_failed - baseline.drops_alloc_failed
+    vanished = s.drops_no_client - baseline.drops_no_client
+
+    if vanished:
+        logger.info(
+            "winvhci discarded %d packet(s) with no client attached, which is "
+            "the ordinary teardown race rather than loss during the tests",
+            vanished,
+        )
+
+    if lost:
         raise AssertionError(
-            f"the winvhci driver lost packets: {s.drops_no_client} with no "
-            f"client attached, {s.drops_alloc_failed} to failed allocations. "
+            f"the winvhci driver lost {lost} packet(s) to failed allocations. "
             f"Any discovery or notification failure in this run is suspect."
         )
 
@@ -190,10 +214,14 @@ async def open_winvhci_bluetooth_controller_link() -> AsyncGenerator[LocalLink, 
 
         await wait_for_adapter(WINVHCI_CONTROLLER_ADDRESS)
 
+        # Baseline AFTER bring-up: the counters are cumulative for the life
+        # of the device node, so without this each module inherits every
+        # earlier module's teardown.
+        baseline = read_stats(hci_transport)
         try:
             yield link
         finally:
-            check_for_packet_loss(hci_transport)
+            check_for_packet_loss(hci_transport, baseline)
 
 
 @contextlib.asynccontextmanager
