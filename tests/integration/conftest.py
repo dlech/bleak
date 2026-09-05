@@ -34,26 +34,42 @@ async def create_hci_transport(
 ) -> AsyncGenerator[Transport, None]:
     """Create a bumble HCI Transport."""
     hci_transport_name: str | None = request.config.getoption("--bleak-hci-transport")
-    bluez_vhci_enabled: bool | None = request.config.getoption("--bleak-bluez-vhci")
+    # --bleak-bluez-vhci is the old, Linux-only spelling of --bleak-vhci. Both
+    # mean the same thing now: give the OS's own Bluetooth stack an adapter
+    # through whatever virtual HCI mechanism that OS provides.
+    vhci_enabled: bool = bool(
+        request.config.getoption("--bleak-vhci")
+        or request.config.getoption("--bleak-bluez-vhci")
+    )
 
-    if hci_transport_name is not None and bluez_vhci_enabled:
+    if hci_transport_name is not None and vhci_enabled:
         raise pytest.UsageError(
-            "Cannot use --bleak-hci-transport and --bleak-bluez-vhci together"
+            "Cannot use --bleak-hci-transport and --bleak-vhci together"
         )
-    elif bluez_vhci_enabled:
-        if sys.platform != "linux":
-            pytest.skip("--bleak-bluez-vhci is only supported on Linux")
+    elif vhci_enabled:
+        # Imported inside the branch: each implementation depends on packages
+        # that only install on its own platform - dbus-fast on Linux, winrt and
+        # winvhci on Windows.
+        if sys.platform == "linux":
+            from tests.integration.bluez_controller import (
+                open_transport_with_bluez_vhci as open_os_vhci_transport,
+            )
+        elif sys.platform == "win32":
+            from tests.integration.winvhci_controller import (
+                open_transport_with_winvhci as open_os_vhci_transport,
+            )
+        else:
+            pytest.skip(f"--bleak-vhci is not supported on {sys.platform}")
             return  # skip raises an exception, but mypy can't infer that
-        from tests.integration.bluez_controller import open_transport_with_bluez_vhci
 
-        async with open_transport_with_bluez_vhci() as hci_transport:
+        async with open_os_vhci_transport() as hci_transport:
             yield hci_transport
     elif hci_transport_name is not None:
         async with await open_transport(hci_transport_name) as hci_transport:
             yield hci_transport
     else:
         pytest.skip(
-            "No HCI transport provided (use --bleak-hci-transport or --bleak-bluez-vhci)"
+            "No HCI transport provided (use --bleak-hci-transport or --bleak-vhci)"
         )
 
 

@@ -300,6 +300,7 @@ dev = [
     { name = "sphinx", version = "9.0.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.11.*'" },
     { name = "sphinx", version = "9.1.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "sphinx-rtd-theme", marker = "python_full_version >= '3.11'" },
+    { name = "winvhci", marker = "sys_platform == 'win32'" },
 ]
 docs = [
     { name = "sphinx", version = "9.0.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.11.*'" },
@@ -316,6 +317,7 @@ test = [
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "pytest-cov" },
+    { name = "winvhci", marker = "sys_platform == 'win32'" },
 ]
 
 [package.metadata]
@@ -351,6 +353,7 @@ dev = [
     { name = "pytest-cov", specifier = ">=7.0.0,<8.0.0" },
     { name = "sphinx", marker = "python_full_version >= '3.11'", specifier = ">=8.2.3" },
     { name = "sphinx-rtd-theme", marker = "python_full_version >= '3.11'", specifier = ">=3.0.2" },
+    { name = "winvhci", marker = "sys_platform == 'win32'", git = "https://github.com/dlech/windows-vhci-driver?subdirectory=python&rev=v1.0.1" },
 ]
 docs = [
     { name = "sphinx", marker = "python_full_version >= '3.11'", specifier = ">=8.2.3" },
@@ -366,6 +369,7 @@ test = [
     { name = "pytest", specifier = ">=8.2.1,<9.0.0" },
     { name = "pytest-asyncio", specifier = ">=1.2.0,<2.0.0" },
     { name = "pytest-cov", specifier = ">=7.0.0,<8.0.0" },
+    { name = "winvhci", marker = "sys_platform == 'win32'", git = "https://github.com/dlech/windows-vhci-driver?subdirectory=python&rev=v1.0.1" },
 ]
 
 [[package]]
@@ -2381,6 +2385,11 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/f4/3d/aae50b1d0e37b5a61055759aedd42c6c99d7c17ab8c3e568ab33c0288938/winrt_windows_storage_streams-3.2.1-cp314-cp314-win_amd64.whl", hash = "sha256:3c5bf41d725369b9986e6d64bad7079372b95c329897d684f955d7028c7f27a0", size = 135566, upload-time = "2025-09-20T07:17:17.69Z" },
     { url = "https://files.pythonhosted.org/packages/bb/c3/6d3ce7a58e6c828e0795c9db8790d0593dd7fdf296e513c999150deb98d4/winrt_windows_storage_streams-3.2.1-cp314-cp314-win_arm64.whl", hash = "sha256:293e09825559d0929bbe5de01e1e115f7a6283d8996ab55652e5af365f032987", size = 134393, upload-time = "2025-09-20T07:17:18.802Z" },
 ]
+
+[[package]]
+name = "winvhci"
+version = "1.0.1"
+source = { git = "https://github.com/dlech/windows-vhci-driver?subdirectory=python&rev=v1.0.1#33ac52423a5d4ad6a2106b422302d80e85e288e8" }
 
 [[package]]
 name = "yarl"

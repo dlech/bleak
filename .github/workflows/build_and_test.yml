@@ -82,7 +82,7 @@ jobs:
             export FORCE_COLOR=1
             export CI=true
             export GITHUB_ACTIONS=true
-            uv run poe test-py${{ matrix.python-version }} --bleak-bluez-vhci --cov-report=xml --cov-report=html:../.htmlcov --junitxml=junit.xml -o junit_family=legacy -o cache_dir=../.pytest_cache
+            uv run poe test-py${{ matrix.python-version }} --bleak-vhci --cov-report=xml --cov-report=html:../.htmlcov --junitxml=junit.xml -o junit_family=legacy -o cache_dir=../.pytest_cache
           '
 
       - name: Upload coverage reports to Codecov
@@ -98,4 +98,58 @@ jobs:
         with:
           report_type: test_results
           flags: bluez-integration-py${{ matrix.python-version }}
+          token: ${{ secrets.CODECOV_TOKEN }}
+
+  # The same integration tests against the Windows Bluetooth stack, using the
+  # winvhci driver in place of BlueZ's vhci. No VM: GitHub's Windows runner
+  # images enable test signing at image build time, so the driver installs
+  # directly on the runner.
+  integration_tests_winvhci:
+    name: "Windows integration tests"
+    # windows-2025 explicitly rather than windows-latest. The driver's support
+    # matrix is specific - windows-2022 has no user-mode Bluetooth services and
+    # Radio.RequestAccessAsync returns DeniedByUser there - so a silent
+    # -latest migration should not be able to move this job onto an image the
+    # driver has never been tested on.
+    runs-on: "windows-2025"
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["310", "311", "312", "313", "314"]
+    steps:
+      - uses: actions/checkout@v4
+
+      # Installs the driver and creates the device node, then asserts the device
+      # reached Status OK. It deliberately does not create a radio: the radio's
+      # lifetime is a device handle's lifetime, so the test process owns it -
+      # tests/integration/winvhci_controller.py opens the device, and the radio
+      # exists only for the duration of the fixture.
+      - name: Install the winvhci driver
+        uses: dlech/windows-vhci-driver/actions/install@v1.0.1
+        with:
+          version: v1.0.1
+
+      - name: Install the latest version of uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          version: "latest"
+
+      - name: Run pytest
+        env:
+          FORCE_COLOR: 1
+        run: uv run poe test-py${{ matrix.python-version }} --bleak-vhci --cov-report=xml --junitxml=junit.xml -o junit_family=legacy
+
+      - name: Upload coverage reports to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          report_type: coverage
+          flags: winvhci-integration-py${{ matrix.python-version }}
+          token: ${{ secrets.CODECOV_TOKEN }}
+
+      - name: Upload test results to Codecov
+        if: ${{ !cancelled() }}
+        uses: codecov/codecov-action@v5
+        with:
+          report_type: test_results
+          flags: winvhci-integration-py${{ matrix.python-version }}
           token: ${{ secrets.CODECOV_TOKEN }}

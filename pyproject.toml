@@ -57,6 +57,11 @@ test = [
     "pytest-asyncio>=1.2.0,<2.0.0",
     "pytest-cov>=7.0.0,<8.0.0",
     "bumble==0.0.226",
+    # Client for the winvhci virtual Bluetooth controller, used by
+    # --bleak-vhci on Windows. From git rather than PyPI because it is not
+    # published yet. Pinned to a tag, and it declares no dependencies of its
+    # own, so it cannot disturb the bumble pin above.
+    "winvhci @ git+https://github.com/dlech/windows-vhci-driver@v1.0.1#subdirectory=python ; platform_system=='Windows'",
 ]
 dev = [
     "poethepoet>=0.45.0",
