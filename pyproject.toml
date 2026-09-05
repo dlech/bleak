@@ -61,7 +61,7 @@ test = [
     # --bleak-vhci on Windows. From git rather than PyPI because it is not
     # published yet. Pinned to a tag, and it declares no dependencies of its
     # own, so it cannot disturb the bumble pin above.
-    "winvhci @ git+https://github.com/dlech/windows-vhci-driver@v1.0.1#subdirectory=python ; platform_system=='Windows'",
+    "winvhci @ git+https://github.com/dlech/windows-vhci-driver@v1.0.2#subdirectory=python ; platform_system=='Windows'",
 ]
 dev = [
     "poethepoet>=0.45.0",
