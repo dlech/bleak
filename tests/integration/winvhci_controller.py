@@ -94,6 +94,37 @@ async def wait_for_adapter(address: str, timeout: float = 15.0) -> BluetoothAdap
     )
 
 
+async def wait_for_adapter_to_go(address: str, timeout: float = 30.0) -> None:
+    """Wait until no Bluetooth adapter reports our controller's address.
+
+    The counterpart of :func:`wait_for_adapter`, and needed for the same reason
+    that function cannot stand alone: it matches on address, and every module
+    in this suite uses the same one, so it cannot tell a freshly created radio
+    from the previous module's radio still being removed.
+
+    Not an error if the wait times out. A developer machine could have a real
+    adapter, and refusing to run at all would be a worse outcome than running
+    with a warning - the tests themselves will say soon enough.
+    """
+    wanted = _address_to_int(address)
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+
+    while loop.time() < deadline:
+        adapter = await BluetoothAdapter.get_default_async()
+        if (
+            adapter is None or adapter.bluetooth_address != wanted
+        ):  # pyright: ignore[reportUnnecessaryComparison]
+            return
+        await asyncio.sleep(0.25)
+
+    logger.warning(
+        "an adapter at %s is still present after %.0fs; starting anyway",
+        address,
+        timeout,
+    )
+
+
 def read_stats(hci_transport: Transport):
     """The driver's packet counters, or None if they cannot be read.
 
@@ -183,6 +214,24 @@ async def open_winvhci_bluetooth_controller_link() -> AsyncGenerator[LocalLink, 
     Open a local link (virtual RF connection) to a bumble Bluetooth controller
     that is connected to the Windows Bluetooth stack through the winvhci driver.
     """
+    # Wait for the PREVIOUS module's radio to finish going away before asking
+    # for a new one.
+    #
+    # Closing the device handle destroys the radio, but Windows does not finish
+    # with it immediately: removing the node unloads BthPort's whole stack above
+    # it, which takes several seconds. Every module in this suite opens its own
+    # transport, so without this a module can start while the last one's radio
+    # is still being torn down.
+    #
+    # wait_for_adapter cannot catch that on its own, and this is the part worth
+    # spelling out: it matches on the controller's address, and every module
+    # uses the SAME address. A stale adapter therefore satisfies it instantly,
+    # so the fixture proceeds against a radio that is on its way out, and the
+    # tests fail in whatever way that particular moment happens to produce.
+    # Running one module alone always passed; running the suite gave anything
+    # from 0 to 54 errors on identical invocations.
+    await wait_for_adapter_to_go(WINVHCI_CONTROLLER_ADDRESS)
+
     # Opening the device is what creates the radio, and closing it is what
     # destroys it - the radio's lifetime is this handle's lifetime. So the
     # transport being an async context manager is not incidental tidiness; it is
