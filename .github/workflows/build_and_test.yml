@@ -125,7 +125,7 @@ jobs:
       # tests/integration/winvhci_controller.py opens the device, and the radio
       # exists only for the duration of the fixture.
       - name: Install the winvhci driver
-        uses: dlech/windows-vhci-driver/actions/install@v1.0.2
+        uses: dlech/windows-vhci-driver/actions/install@v1.1.1
         with:
           version: v1.0.2
 

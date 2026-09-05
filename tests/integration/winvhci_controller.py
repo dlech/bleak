@@ -94,6 +94,48 @@ async def wait_for_adapter(address: str, timeout: float = 15.0) -> BluetoothAdap
     )
 
 
+def check_for_packet_loss(hci_transport: Transport) -> None:
+    """
+    Fail if the driver lost a packet while the tests were running.
+
+    Worth doing explicitly because loss here is otherwise invisible: a dropped
+    advertising report is indistinguishable from a device that was simply not
+    advertising, so it surfaces as a flaky discovery test somewhere else
+    entirely rather than as itself. The driver counts what it discards, and
+    reading the counters turns "the test is flaky" into "the driver dropped
+    four packets".
+
+    Read before the transport closes, since the counters live behind the device
+    handle and closing it is what destroys the radio.
+    """
+    # `device` belongs to winvhci's own Transport subclass, not to bumble's
+    # Transport, so it is fetched defensively rather than typed: an older
+    # winvhci without the stats IOCTL should skip this check, not crash the
+    # teardown of every test.
+    device = getattr(hci_transport, "device", None)
+    stats = getattr(device, "stats", None)
+    if stats is None:
+        logger.info("winvhci client has no stats support; skipping the loss check")
+        return
+
+    s = stats()
+    logger.info(
+        "winvhci: %d packets to the stack, %d to the client, peak depths %d/%d/%d",
+        s.writes_total,
+        s.queued_to_user_total,
+        s.host_to_ctrl_peak,
+        s.pending_event_peak,
+        s.pending_data_peak,
+    )
+
+    if s.drops_no_client or s.drops_alloc_failed:
+        raise AssertionError(
+            f"the winvhci driver lost packets: {s.drops_no_client} with no "
+            f"client attached, {s.drops_alloc_failed} to failed allocations. "
+            f"Any discovery or notification failure in this run is suspect."
+        )
+
+
 @contextlib.asynccontextmanager
 async def open_winvhci_bluetooth_controller_link() -> AsyncGenerator[LocalLink, None]:
     """
@@ -131,7 +173,10 @@ async def open_winvhci_bluetooth_controller_link() -> AsyncGenerator[LocalLink, 
 
         await wait_for_adapter(WINVHCI_CONTROLLER_ADDRESS)
 
-        yield link
+        try:
+            yield link
+        finally:
+            check_for_packet_loss(hci_transport)
 
 
 @contextlib.asynccontextmanager

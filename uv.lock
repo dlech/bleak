@@ -353,7 +353,7 @@ dev = [
     { name = "pytest-cov", specifier = ">=7.0.0,<8.0.0" },
     { name = "sphinx", marker = "python_full_version >= '3.11'", specifier = ">=8.2.3" },
     { name = "sphinx-rtd-theme", marker = "python_full_version >= '3.11'", specifier = ">=3.0.2" },
-    { name = "winvhci", marker = "sys_platform == 'win32'", git = "https://github.com/dlech/windows-vhci-driver?subdirectory=python&rev=v1.0.2" },
+    { name = "winvhci", marker = "sys_platform == 'win32'", git = "https://github.com/dlech/windows-vhci-driver?subdirectory=python&rev=v1.1.1" },
 ]
 docs = [
     { name = "sphinx", marker = "python_full_version >= '3.11'", specifier = ">=8.2.3" },
@@ -369,7 +369,7 @@ test = [
     { name = "pytest", specifier = ">=8.2.1,<9.0.0" },
     { name = "pytest-asyncio", specifier = ">=1.2.0,<2.0.0" },
     { name = "pytest-cov", specifier = ">=7.0.0,<8.0.0" },
-    { name = "winvhci", marker = "sys_platform == 'win32'", git = "https://github.com/dlech/windows-vhci-driver?subdirectory=python&rev=v1.0.2" },
+    { name = "winvhci", marker = "sys_platform == 'win32'", git = "https://github.com/dlech/windows-vhci-driver?subdirectory=python&rev=v1.1.1" },
 ]
 
 [[package]]
@@ -2388,8 +2388,8 @@ wheels = [
 
 [[package]]
 name = "winvhci"
-version = "1.0.2"
-source = { git = "https://github.com/dlech/windows-vhci-driver?subdirectory=python&rev=v1.0.2#650fdbf3f873403d5c46bf127a2c128ab4feffa8" }
+version = "1.1.1"
+source = { git = "https://github.com/dlech/windows-vhci-driver?subdirectory=python&rev=v1.1.1#4fbbc962e6995da00cb75407d74793c3c9ff9e95" }
 
 [[package]]
 name = "yarl"
