@@ -50,20 +50,25 @@ async def create_hci_transport(
         # Imported inside the branch: each implementation depends on packages
         # that only install on its own platform - dbus-fast on Linux, winrt and
         # winvhci on Windows.
+        #
+        # Each branch does its own `async with`, rather than binding a common
+        # alias and using it once below. The tidier-looking version does not
+        # type check on a THIRD platform: mypy narrows sys.platform, so on macOS
+        # both imports are unreachable and the alias is never bound.
         if sys.platform == "linux":
             from tests.integration.bluez_controller import (
-                open_transport_with_bluez_vhci as open_os_vhci_transport,
+                open_transport_with_bluez_vhci,
             )
+
+            async with open_transport_with_bluez_vhci() as hci_transport:
+                yield hci_transport
         elif sys.platform == "win32":
-            from tests.integration.winvhci_controller import (
-                open_transport_with_winvhci as open_os_vhci_transport,
-            )
+            from tests.integration.winvhci_controller import open_transport_with_winvhci
+
+            async with open_transport_with_winvhci() as hci_transport:
+                yield hci_transport
         else:
             pytest.skip(f"--bleak-vhci is not supported on {sys.platform}")
-            return  # skip raises an exception, but mypy can't infer that
-
-        async with open_os_vhci_transport() as hci_transport:
-            yield hci_transport
     elif hci_transport_name is not None:
         async with await open_transport(hci_transport_name) as hci_transport:
             yield hci_transport
