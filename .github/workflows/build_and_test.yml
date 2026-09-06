@@ -125,14 +125,14 @@ jobs:
       # tests/integration/winvhci_controller.py opens the device, and the radio
       # exists only for the duration of the fixture.
       - name: Install the winvhci driver
-        uses: dlech/windows-vhci-driver/actions/install@v1.1.1
+        uses: dlech/windows-vhci-driver/actions/install@v1.2.0
         with:
           # Keep equal to the ref above. The action takes the release tag as
           # an input rather than deriving it from the ref, so bumping only one
           # of the two installs a driver that does not match the client - which
           # surfaces as ERROR_INVALID_FUNCTION from an IOCTL the older driver
           # does not implement, not as a version complaint.
-          version: v1.1.1
+          version: v1.2.0
 
       - name: Install the latest version of uv
         uses: astral-sh/setup-uv@v6
