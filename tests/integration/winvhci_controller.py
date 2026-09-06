@@ -23,6 +23,8 @@ from winvhci.bumble_compat import (
 from winvhci.device import VhciStats
 from winvhci.transport import open_winvhci_transport
 
+from tests.integration import winvhci_diagnostics
+
 # The address the virtual controller reports as its own. Windows connects as
 # central using this as its public identity address, which is what
 # WindowsCompatLink exists to route correctly.
@@ -378,9 +380,16 @@ async def open_winvhci_bluetooth_controller_link() -> AsyncGenerator[LocalLink, 
         # of the device node, so without this each module inherits every
         # earlier module's teardown.
         baseline = read_stats(hci_transport)
+
+        # So a GATT failure deep inside Bleak can read the driver's counters.
+        # Bleak knows nothing about the transport underneath it, and the most
+        # useful counter at that moment is radios_alive: it says whether a
+        # previous radio was still being removed when discovery failed.
+        winvhci_diagnostics.set_current_transport(hci_transport)
         try:
             yield link
         finally:
+            winvhci_diagnostics.set_current_transport(None)
             check_for_packet_loss(hci_transport, baseline)
 
 
@@ -390,6 +399,13 @@ async def open_transport_with_winvhci() -> AsyncGenerator[Transport, None]:
     Create a bumble HCI Transport connected to Windows via the winvhci driver
     and connect a Bluetooth controller for a peripheral device to it.
     """
+    # Windows GATT discovery fails intermittently in ways Bleak's own retry
+    # cannot see, and the cause is not yet known. This records the machine's
+    # state when it happens; it changes no behavior, and only does work on a
+    # failure. Installed here rather than in conftest so it exists only on the
+    # winvhci path.
+    winvhci_diagnostics.install()
+
     async with open_winvhci_bluetooth_controller_link() as local_link:
         peripheral_controller = Controller("BLEAK-TEST-PERIPHERAL", link=local_link)
         yield Transport(peripheral_controller, peripheral_controller)

@@ -144,6 +144,20 @@ jobs:
           FORCE_COLOR: 1
         run: uv run poe test-py${{ matrix.python-version }} --bleak-vhci --cov-report=xml --junitxml=junit.xml -o junit_family=legacy
 
+      # Windows GATT discovery fails intermittently in ways Bleak's own retry
+      # cannot see, and it reproduces far better here than on a development
+      # machine. tests/integration/winvhci_diagnostics.py records the driver's
+      # counters and PnP state at the moment it happens; keeping the file makes
+      # every run a sample rather than something to sit and wait for locally.
+      # The file only exists if discovery actually failed.
+      - name: Keep the GATT failure diagnostics
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: winvhci-gatt-diagnostics-py${{ matrix.python-version }}
+          path: winvhci-gatt-diagnostics.log
+          if-no-files-found: ignore
+
       - name: Upload coverage reports to Codecov
         uses: codecov/codecov-action@v5
         with:
