@@ -20,6 +20,7 @@ from winvhci.bumble_compat import (
     WindowsCompatLink,
     apply_dual_mode,
 )
+from winvhci.device import VhciStats
 from winvhci.transport import open_winvhci_transport
 
 # The address the virtual controller reports as its own. Windows connects as
@@ -161,9 +162,7 @@ async def _adapter_is_live(adapter: BluetoothAdapter) -> bool:
     return radio is not None  # pyright: ignore[reportUnnecessaryComparison]
 
 
-async def wait_for_adapter(
-    address: str, timeout: float = 30.0
-) -> BluetoothAdapter:
+async def wait_for_adapter(address: str, timeout: float = 30.0) -> BluetoothAdapter:
     """
     Wait for Windows to bring up a Bluetooth adapter for OUR radio.
 
@@ -246,7 +245,7 @@ async def wait_for_adapter(
     )
 
 
-def read_stats(hci_transport: Transport):
+def read_stats(hci_transport: Transport) -> "VhciStats | None":
     """The driver's packet counters, or None if they cannot be read.
 
     `device` belongs to winvhci's own Transport subclass rather than to
@@ -274,7 +273,9 @@ def read_stats(hci_transport: Transport):
         return None
 
 
-def check_for_packet_loss(hci_transport: Transport, baseline) -> None:
+def check_for_packet_loss(
+    hci_transport: Transport, baseline: "VhciStats | None"
+) -> None:
     """
     Fail if the driver lost a packet while the tests were running.
 
