@@ -39,7 +39,7 @@ def _address_to_int(address: str) -> int:
     return int(address.replace(":", ""), 16)
 
 
-async def wait_for_adapter_to_go(address: str, timeout: float = 30.0) -> None:
+async def wait_for_adapter_to_go(address: str, timeout: float = 90.0) -> None:
     """Wait until no Bluetooth adapter reports our controller's address.
 
     Needed BEFORE creating a radio, and not optional. get_default_async keeps
@@ -49,9 +49,63 @@ async def wait_for_adapter_to_go(address: str, timeout: float = 30.0) -> None:
     does not work: it waits out the full timeout and then raises, which was
     measured at 56 errors per run against none with this in place.
 
-    Not an error if the wait times out. A developer machine may have a real
-    adapter, and refusing to run at all would be worse than running with a
-    warning - the tests themselves will say soon enough.
+    Timing out is an error. An earlier version logged a warning and started
+    anyway, on the theory that a developer machine might have a real adapter
+    and that refusing to run would be worse. That reasoning does not hold: the
+    wait returns as soon as it sees any adapter whose address is not ours, so
+    the only way to reach the timeout is for OUR previous radio to still be
+    there. Starting in that state does not fail cleanly - it fails several
+    tests later as ERROR_FILE_NOT_FOUND out of GetGattServicesAsync, or
+    ERROR_NOT_FOUND out of get_radio_async, both of which read as Bleak bugs
+    and cost a great deal of time to trace back to here.
+
+    The timeout is ninety seconds because removal has a long tail, and the tail
+    is Windows being patient rather than anything being broken. Three
+    instrumented runs measured 16 waits each, with maxima of 34.2s, 34.2s and
+    34.3s - a constant, not scatter. Ninety seconds is about two and a half
+    times that: margin for a tail three runs could not see, without making a
+    genuinely stuck radio take minutes to report itself.
+
+    What produces 34s is not known, and two attractive explanations have been
+    tested and failed:
+
+    - The LE connection link supervision timeout, documented as capped at
+      0x0C80 in 10ms units - 32 seconds - which matches 34s almost too well.
+      But dropping the controller with a live LE link took 8.7s and 8.8s,
+      against 11.3s and 2.7s after disconnecting first. No difference, and
+      nothing near 34s, so the resemblance is coincidence.
+    - Accumulated stale devnodes slowing PnP. Purging 1428 of them changed
+      nothing.
+
+    Microsoft documents no PnP removal timeout and nothing about BthPort's
+    behavior when a radio vanishes, so 34s stands as a measurement without an
+    explanation. There are well known reports of Windows dropping BLE links at
+    around 30s - noble-uwp#40, esp32-snippets#1096 - but those concern
+    CONNECTIONS, both threads are unresolved, and the test above rules that
+    mechanism out here. Note also that no standalone reproduction has ever produced
+    it: dozens of open/close cycles, with and without connections, all clear in
+    under 12s. Only full suite runs reach 34s, so whatever causes it needs the
+    sustained load and is not reachable by a small script.
+
+    A virtual radio vanishes the moment its client closes the handle, which no
+    real radio ever does; a physical adapter that stops answering has gone out
+    of range or lost power, and the stack is built to retry that case rather
+    than tear down at once. So it keeps working on a radio the driver has
+    already marked missing, and PnP cannot finish the removal until it stops.
+    Caught in the act at a 30s timeout: PnP still reported the devnode OK, WinRT
+    still reported RadioState.ON, and bthserv still held a handle on
+    \\Device\\BTHMS_RFCOMM - down from two handles to one, a stack partway
+    through giving up. Two seconds after a fast teardown those handles are gone.
+
+    The handle really is closed by then. The control device is exclusive and the
+    next radio opens successfully moments later, which could not happen while
+    the previous handle was open.
+
+    Do not shorten this on the strength of a short measurement. Timing 27 idle
+    open/close cycles and 12 with a full GATT connect gave a maximum of 8.2s,
+    which made 30s look generous - but that sampled only the body of the
+    distribution. Instrumented suite runs then hit 30s two or three times per
+    run. The limit has to outlast the stack's retry period, not the median.
     """
     wanted = _address_to_int(address)
     loop = asyncio.get_running_loop()
@@ -71,10 +125,12 @@ async def wait_for_adapter_to_go(address: str, timeout: float = 30.0) -> None:
             return
         await asyncio.sleep(0.25)
 
-    logger.warning(
-        "an adapter at %s is still present after %.0fs; starting anyway",
-        address,
-        timeout,
+    raise TimeoutError(
+        f"a Bluetooth adapter at {address} was still present after "
+        f"{timeout:.0f}s. That is the radio from the previous test, whose "
+        f"handle is closed but whose devnode Windows has not finished "
+        f"removing. Well past the observed tail, so treat it as stuck rather "
+        f"than slow."
     )
 
 
@@ -105,22 +161,8 @@ async def _adapter_is_live(adapter: BluetoothAdapter) -> bool:
     return radio is not None  # pyright: ignore[reportUnnecessaryComparison]
 
 
-async def current_adapter_id(address: str) -> str | None:
-    """The device id of the adapter currently at `address`, if any.
-
-    Captured before a new radio is created, so :func:`wait_for_adapter` can
-    tell the new one from whatever was there before.
-    """
-    adapter = await BluetoothAdapter.get_default_async()
-    if adapter is None:  # pyright: ignore[reportUnnecessaryComparison]
-        return None
-    if adapter.bluetooth_address != _address_to_int(address):
-        return None
-    return adapter.device_id
-
-
 async def wait_for_adapter(
-    address: str, exclude_device_id: str | None = None, timeout: float = 30.0
+    address: str, timeout: float = 30.0
 ) -> BluetoothAdapter:
     """
     Wait for Windows to bring up a Bluetooth adapter for OUR radio.
@@ -130,24 +172,24 @@ async def wait_for_adapter(
     BluetoothAdapter; a DeviceWatcher would be a great deal more machinery for
     a fixture that runs once.
 
-    `exclude_device_id` is what makes it correct across repeated use, and
-    matching on address alone was a real bug rather than a theoretical one.
-    Every transport this suite opens gives its controller the same address, so
-    a stale adapter from the previous test satisfied an address-only match
-    instantly - and the fixture then ran against a radio that was being torn
-    down. One module alone always passed; the whole suite, run twice back to
-    back with no changes, gave 54 errors and then none.
+    Matching on address alone is sound ONLY because wait_for_adapter_to_go runs
+    first and is now correct. That ordering is the whole safety argument, so do
+    not reorder or skip it.
 
-    The device id is what identifies a radio instance, and it does change:
+    This used to take an `exclude_device_id` and require a different device id,
+    because an address-only match was satisfied instantly by the previous
+    test's adapter and the fixture then ran against a radio being torn down -
+    54 errors in a back-to-back run. That fix addressed the symptom. The cause
+    was that the wait for the old radio to go gave up after 30s, in the middle
+    of the Windows Bluetooth stack retrying a radio it thought had gone out of
+    range, so the old adapter was frequently still there when this ran.
 
-        \\\\?\\winvhci#radio#1&79f5d87&1a&97#{92383b0e-...}
-        \\\\?\\winvhci#radio#1&79f5d87&1a&98#{92383b0e-...}
-
-    This works WITH wait_for_adapter_to_go and does not replace it, which is
-    worth stating because replacing it was tried and was much worse - 56 errors
-    a run against none. A new adapter cannot become the default while the
-    previous one is still present, so excluding the old id without first
-    waiting for it to go just waits out the timeout and raises.
+    With that wait given three minutes, the old adapter is genuinely gone
+    before this starts, and there is nothing left for an address match to
+    confuse it with. The identity check also no longer WORKS: winvhci now uses
+    a constant PnP instance ID so that Windows reuses one devnode instead of
+    creating a permanent new one per radio, which means consecutive radios
+    share a device id and "wait for a different one" waits forever.
 
     Measured timings, for anyone tempted to tune this: a new adapter appears
     about 0.3 s after the radio is created, and the old one usually vanishes
@@ -176,12 +218,12 @@ async def wait_for_adapter(
             continue
 
         if adapter.bluetooth_address == wanted:
-            if adapter.device_id != exclude_device_id and await _adapter_is_live(
-                adapter
-            ):
+            if await _adapter_is_live(adapter):
                 logger.info("adapter %s is up as %s", address, adapter.device_id)
                 return adapter
-            # Either the one that was already here, or a stale cache entry.
+            # A stale cache entry: get_default_async can return an adapter for
+            # a radio that is already gone, and using it is the only way to
+            # tell.
             await asyncio.sleep(0.25)
             continue
 
@@ -293,19 +335,11 @@ async def open_winvhci_bluetooth_controller_link() -> AsyncGenerator[LocalLink, 
     Open a local link (virtual RF connection) to a bumble Bluetooth controller
     that is connected to the Windows Bluetooth stack through the winvhci driver.
     """
-    # Which adapter, if any, is already here - captured BEFORE the radio is
-    # created, so the wait below can tell the new one from a leftover.
-    #
-    # Every transport this suite opens gives its controller the same address,
-    # and closing a handle destroys its radio without Windows finishing with it
-    # immediately. So an address-only match could be satisfied by the previous
-    # test's adapter, and the fixture would run against a radio being torn
-    # down.
-    previous_adapter_id = await current_adapter_id(WINVHCI_CONTROLLER_ADDRESS)
-
-    # And wait for it to actually go. A new adapter cannot become the
-    # default while the previous one is still present, so the identity check
-    # below cannot stand on its own - measured, at 56 errors a run.
+    # Wait for the previous test's radio to actually be gone before creating
+    # ours. Every transport this suite opens gives its controller the same
+    # address, so until the old one has gone there is no way to tell the two
+    # apart - and this is the only step that establishes that, which is why it
+    # comes first and why it is allowed three minutes.
     await wait_for_adapter_to_go(WINVHCI_CONTROLLER_ADDRESS)
 
     # Opening the device is what creates the radio, and closing it is what
@@ -337,9 +371,7 @@ async def open_winvhci_bluetooth_controller_link() -> AsyncGenerator[LocalLink, 
         # after Read_Local_Supported_Features when it sees that.
         apply_dual_mode(windows_controller)
 
-        await wait_for_adapter(
-            WINVHCI_CONTROLLER_ADDRESS, exclude_device_id=previous_adapter_id
-        )
+        await wait_for_adapter(WINVHCI_CONTROLLER_ADDRESS)
 
         # Baseline AFTER bring-up: the counters are cumulative for the life
         # of the device node, so without this each module inherits every
