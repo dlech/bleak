@@ -67,6 +67,11 @@ _current_transport: Any = None
 
 _installed = False
 
+#: How many times per run the PnP state may be queried. Bounded because the
+#: query costs about a second and a failure is not always a test failure.
+MAX_PNP_QUERIES = 3
+_pnp_queries = 0
+
 
 def set_current_transport(transport: Any) -> None:
     """Record the transport a failure should read counters from."""
@@ -111,9 +116,26 @@ def _driver_stats() -> str:
 
 
 async def _record(test_id: str, error: BaseException) -> None:
+    global _pnp_queries
+
     stamp = datetime.datetime.now().isoformat(timespec="milliseconds")
+
+    # The driver counters come from an IOCTL and cost microseconds, so they are
+    # always read. The PnP query shells out to PowerShell and costs about a
+    # second, and that is only safe a bounded number of times.
+    #
+    # Bleak's connect path has a branch that deliberately swallows a
+    # _get_services failure - it awaits a cancelled task and ignores OSError -
+    # so a failure here is not always a test failure. Spending a second in a
+    # path Bleak meant to discard silently would perturb the very timing under
+    # investigation, which is a mistake already made twice on this problem.
     stats = await asyncio.to_thread(_driver_stats)
-    pnp = await asyncio.to_thread(_pnp_state)
+
+    if _pnp_queries < MAX_PNP_QUERIES:
+        _pnp_queries += 1
+        pnp = await asyncio.to_thread(_pnp_state)
+    else:
+        pnp = f"<skipped, already queried {MAX_PNP_QUERIES} times this run>"
 
     with open(DIAGNOSTICS_PATH, "a", encoding="utf-8") as handle:
         handle.write(
