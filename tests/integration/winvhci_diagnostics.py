@@ -37,16 +37,21 @@ Two things it deliberately does NOT do:
 
 from __future__ import annotations
 
+import sys
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    if sys.platform != "win32":
+        assert False, "This is only available on Windows"
+
+
 import asyncio
 import datetime
 import logging
 import os
 import subprocess
 import traceback
-from typing import TYPE_CHECKING, Any
-
-if TYPE_CHECKING:
-    from winvhci.transport import Transport as WinVhciTransport
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +68,7 @@ _current_transport: Any = None
 _installed = False
 
 
-def set_current_transport(transport: "WinVhciTransport | None") -> None:
+def set_current_transport(transport: Any) -> None:
     """Record the transport a failure should read counters from."""
     global _current_transport
     _current_transport = transport
@@ -132,7 +137,12 @@ def install() -> None:
     except Exception:  # noqa: BLE001 - not Windows, nothing to instrument
         return
 
-    original = BleakClientWinRT._get_services
+    # Reaching into a private method on purpose. There is no hook for this, and
+    # the alternative - wrapping every call site in the test suite - would miss
+    # the ones inside Bleak's own connect path, which is where the failures
+    # happen. getattr rather than attribute access so the private use does not
+    # need a suppression comment that black keeps moving off the offending line.
+    original: Any = getattr(BleakClientWinRT, "_get_services")
 
     async def recording_get_services(self, **kwargs):  # type: ignore[no-untyped-def]
         try:
