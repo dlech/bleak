@@ -142,6 +142,18 @@ jobs:
       - name: Run pytest
         env:
           FORCE_COLOR: 1
+          # Capture HCI traffic. The open question about the intermittent GATT
+          # discovery failure is whether Windows puts any ATT request on air
+          # before failing: if not, the fault never reaches the peer and is
+          # entirely inside BthPort or the WinRT projection; if it does, it is
+          # a protocol-level problem. Nothing but a capture can tell them
+          # apart, and a virtual controller's traffic reaches no radio, so no
+          # sniffer can see it either.
+          #
+          # {now} matters: bumble opens the file with mode 'wb', so a fixed
+          # path would leave only the last of the ~16 links a run opens - and
+          # the failure is often in the first.
+          BUMBLE_SNOOPER: btsnoop:file:hci-{now:%H%M%S-%f}.log
         run: uv run poe test-py${{ matrix.python-version }} --bleak-vhci --cov-report=xml --junitxml=junit.xml -o junit_family=legacy
 
       # Windows GATT discovery fails intermittently in ways Bleak's own retry
@@ -156,6 +168,16 @@ jobs:
         with:
           name: winvhci-gatt-diagnostics-py${{ matrix.python-version }}
           path: winvhci-gatt-diagnostics.log
+          if-no-files-found: ignore
+
+      # Only worth keeping when discovery actually failed - otherwise this is
+      # sixteen captures of a healthy run, uploaded on every job.
+      - name: Keep the HCI captures if discovery failed
+        if: ${{ !cancelled() && hashFiles('winvhci-gatt-diagnostics.log') != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: winvhci-hci-capture-py${{ matrix.python-version }}
+          path: hci-*.log
           if-no-files-found: ignore
 
       - name: Upload coverage reports to Codecov
