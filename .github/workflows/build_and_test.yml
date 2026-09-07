@@ -82,7 +82,7 @@ jobs:
             export FORCE_COLOR=1
             export CI=true
             export GITHUB_ACTIONS=true
-            uv run poe test-py${{ matrix.python-version }} --bleak-bluez-vhci --cov-report=xml --cov-report=html:../.htmlcov --junitxml=junit.xml -o junit_family=legacy -o cache_dir=../.pytest_cache
+            uv run poe test-py${{ matrix.python-version }} --bleak-vhci --cov-report=xml --cov-report=html:../.htmlcov --junitxml=junit.xml -o junit_family=legacy -o cache_dir=../.pytest_cache
           '
 
       - name: Upload coverage reports to Codecov
@@ -98,4 +98,99 @@ jobs:
         with:
           report_type: test_results
           flags: bluez-integration-py${{ matrix.python-version }}
+          token: ${{ secrets.CODECOV_TOKEN }}
+
+  # The same integration tests against the Windows Bluetooth stack, using the
+  # winvhci driver in place of BlueZ's vhci. No VM: GitHub's Windows runner
+  # images enable test signing at image build time, so the driver installs
+  # directly on the runner.
+  integration_tests_winvhci:
+    name: "Windows integration tests"
+    # windows-2025 explicitly rather than windows-latest. The driver's support
+    # matrix is specific - windows-2022 has no user-mode Bluetooth services and
+    # Radio.RequestAccessAsync returns DeniedByUser there - so a silent
+    # -latest migration should not be able to move this job onto an image the
+    # driver has never been tested on.
+    runs-on: "windows-2025"
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["310", "311", "312", "313", "314"]
+    steps:
+      - uses: actions/checkout@v4
+
+      # Installs the driver and creates the device node, then asserts the device
+      # reached Status OK. It deliberately does not create a radio: the radio's
+      # lifetime is a device handle's lifetime, so the test process owns it -
+      # tests/integration/winvhci_controller.py opens the device, and the radio
+      # exists only for the duration of the fixture.
+      - name: Install the winvhci driver
+        uses: dlech/windows-vhci-driver/actions/install@v1.2.0
+        with:
+          # Keep equal to the ref above. The action takes the release tag as
+          # an input rather than deriving it from the ref, so bumping only one
+          # of the two installs a driver that does not match the client - which
+          # surfaces as ERROR_INVALID_FUNCTION from an IOCTL the older driver
+          # does not implement, not as a version complaint.
+          version: v1.2.0
+
+      - name: Install the latest version of uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          version: "latest"
+
+      - name: Run pytest
+        env:
+          FORCE_COLOR: 1
+          # Capture HCI traffic. The open question about the intermittent GATT
+          # discovery failure is whether Windows puts any ATT request on air
+          # before failing: if not, the fault never reaches the peer and is
+          # entirely inside BthPort or the WinRT projection; if it does, it is
+          # a protocol-level problem. Nothing but a capture can tell them
+          # apart, and a virtual controller's traffic reaches no radio, so no
+          # sniffer can see it either.
+          #
+          # {now} matters: bumble opens the file with mode 'wb', so a fixed
+          # path would leave only the last of the ~16 links a run opens - and
+          # the failure is often in the first.
+          BUMBLE_SNOOPER: btsnoop:file:hci-{now:%H%M%S-%f}.log
+        run: uv run poe test-py${{ matrix.python-version }} --bleak-vhci --cov-report=xml --junitxml=junit.xml -o junit_family=legacy
+
+      # Windows GATT discovery fails intermittently in ways Bleak's own retry
+      # cannot see, and it reproduces far better here than on a development
+      # machine. tests/integration/winvhci_diagnostics.py records the driver's
+      # counters and PnP state at the moment it happens; keeping the file makes
+      # every run a sample rather than something to sit and wait for locally.
+      # The file only exists if discovery actually failed.
+      - name: Keep the GATT failure diagnostics
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: winvhci-gatt-diagnostics-py${{ matrix.python-version }}
+          path: winvhci-gatt-diagnostics.log
+          if-no-files-found: ignore
+
+      # Only worth keeping when discovery actually failed - otherwise this is
+      # sixteen captures of a healthy run, uploaded on every job.
+      - name: Keep the HCI captures if discovery failed
+        if: ${{ !cancelled() && hashFiles('winvhci-gatt-diagnostics.log') != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: winvhci-hci-capture-py${{ matrix.python-version }}
+          path: hci-*.log
+          if-no-files-found: ignore
+
+      - name: Upload coverage reports to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          report_type: coverage
+          flags: winvhci-integration-py${{ matrix.python-version }}
+          token: ${{ secrets.CODECOV_TOKEN }}
+
+      - name: Upload test results to Codecov
+        if: ${{ !cancelled() }}
+        uses: codecov/codecov-action@v5
+        with:
+          report_type: test_results
+          flags: winvhci-integration-py${{ matrix.python-version }}
           token: ${{ secrets.CODECOV_TOKEN }}

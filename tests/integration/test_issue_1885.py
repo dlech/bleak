@@ -11,6 +11,7 @@ from bumble.gatt import (
 )
 
 from bleak import BleakClient
+from bleak.backends import BleakBackend, get_default_backend
 from bleak.backends.characteristic import BleakGATTCharacteristic
 from tests.integration.conftest import (
     configure_and_power_on_bumble_peripheral,
@@ -21,13 +22,33 @@ TEST_SERVICE_UUID = "9d513f40-5c89-42dc-9688-2cfa30f2d9e7"
 TEST_CHARACTERISTIC_UUID = "e809cb2f-34e3-42a1-ba92-22db2495cd6a"
 
 
-@pytest.mark.parametrize("use_start_notify", [True, False])
+@pytest.mark.parametrize(
+    "use_start_notify",
+    [
+        True,
+        pytest.param(
+            False,
+            marks=pytest.mark.skipif(
+                get_default_backend() != BleakBackend.BLUEZ_DBUS,
+                reason="the missed notification is BlueZ AcquireNotify behavior",
+            ),
+        ),
+    ],
+)
 async def test_notification_sent_before_write_response(
     use_start_notify: bool,
     bumble_peripheral: Device,
 ) -> None:
     """
     Regression test for <https://github.com/hbldh/bleak/issues/1885>.
+
+    The ``use_start_notify=False`` case asserts a BlueZ behavior rather than
+    something every backend should do. As the comment further down records,
+    BlueZ does not deliver the notification when it takes the AcquireNotify
+    path, so that case expects a timeout. ``use_start_notify`` is a BlueZ-only
+    option and other backends ignore it, so they deliver the notification and
+    the expected timeout never arrives - "DID NOT RAISE TimeoutError", on every
+    run rather than intermittently.
     """
 
     notifications_enabled = False
