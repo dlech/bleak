@@ -433,6 +433,8 @@ class BleakAdapter:
     To get an instance, use ``adapter = await BleakAdapter.get()`` instead of
     ``adapter = BleakAdapter()``.
 
+    .. warning:: This API is experimental and may change in a minor release.
+
     .. versionadded:: unreleased
     """
 

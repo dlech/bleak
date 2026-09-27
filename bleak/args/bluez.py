@@ -133,6 +133,8 @@ class BlueZAdapterArgs(TypedDict, total=False):
     """
     :class:`bleak.BleakAdapter` args that are specific to the BlueZ backend.
 
+    .. warning:: This API is experimental and may change in a minor release.
+
     .. versionadded:: unreleased
     """
 
