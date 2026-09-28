@@ -9,6 +9,7 @@ if TYPE_CHECKING:
 import asyncio
 import contextlib
 import logging
+import os
 from collections.abc import AsyncGenerator
 from typing import cast
 
@@ -30,6 +31,13 @@ from winvhci.transport import open_winvhci_transport
 WINVHCI_CONTROLLER_ADDRESS = "F0:F1:F2:F3:F4:F5"
 
 logger = logging.getLogger(__name__)
+
+# EXPERIMENT: BLEAK_WINVHCI_VARIANT=accept64 reports a 64-entry LE filter
+# accept list instead of bumble's default 8. Windows logs System event 31 for
+# the default ("does not support the minimum buffer requirement to support the
+# hardware filtering of Bluetooth Low Energy advertisements") and takes a
+# software path for advertisements; 64 makes the event go away.
+VARIANT = os.environ.get("BLEAK_WINVHCI_VARIANT", "baseline")
 
 
 def _address_to_int(address: str) -> int:
@@ -267,6 +275,9 @@ async def open_winvhci_bluetooth_controller_link() -> AsyncGenerator[LocalLink, 
         # Bumble reports itself LE-only, and Windows stops dead after
         # Read_Local_Supported_Features when it sees that.
         apply_dual_mode(windows_controller)
+
+        if VARIANT == "accept64":
+            windows_controller.filter_accept_list_size = 64
 
         await wait_for_adapter(WINVHCI_CONTROLLER_ADDRESS)
 
