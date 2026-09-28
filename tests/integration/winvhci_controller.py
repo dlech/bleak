@@ -237,6 +237,39 @@ async def check_for_packet_loss(hci_transport: Transport, baseline: VhciStats) -
         )
 
 
+#: How long Windows is given to drop its LE links before the radio is removed.
+#: It drops a link about 3s after the last handle to the device is closed.
+LINKS_DOWN_TIMEOUT = 10.0
+
+
+async def wait_for_links_down(
+    controller: Controller, timeout: float = LINKS_DOWN_TIMEOUT
+) -> None:
+    """
+    Wait until Windows has dropped every LE link on our radio.
+
+    BleakClient.disconnect() on WinRT returns once it has closed its handles,
+    but Windows keeps the link up for about 3s after that. Removing the radio
+    inside that window leaves the stack tearing the link down under the next
+    test, which is the suspected cause of WinRT calls hanging ~40s.
+    """
+    loop = asyncio.get_running_loop()
+    start = loop.time()
+
+    while controller.le_connections:
+        if loop.time() - start >= timeout:
+            logger.warning(
+                "Windows still has %d LE link(s) up %.0fs after the test; "
+                "removing the radio anyway",
+                len(controller.le_connections),
+                timeout,
+            )
+            return
+        await asyncio.sleep(0.05)
+
+    logger.info("LE links down after %.3fs", loop.time() - start)
+
+
 @contextlib.asynccontextmanager
 async def open_winvhci_bluetooth_controller_link() -> AsyncGenerator[LocalLink, None]:
     """
@@ -277,6 +310,7 @@ async def open_winvhci_bluetooth_controller_link() -> AsyncGenerator[LocalLink, 
         try:
             yield link
         finally:
+            await wait_for_links_down(windows_controller)
             await check_for_packet_loss(hci_transport, baseline)
 
 
