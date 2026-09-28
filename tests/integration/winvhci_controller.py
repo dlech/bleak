@@ -10,6 +10,7 @@ import asyncio
 import contextlib
 import logging
 import os
+import subprocess
 from collections.abc import AsyncGenerator
 from typing import cast
 
@@ -32,12 +33,58 @@ WINVHCI_CONTROLLER_ADDRESS = "F0:F1:F2:F3:F4:F5"
 
 logger = logging.getLogger(__name__)
 
-# EXPERIMENT: BLEAK_WINVHCI_VARIANT=accept64 reports a 64-entry LE filter
-# accept list instead of bumble's default 8. Windows logs System event 31 for
-# the default ("does not support the minimum buffer requirement to support the
-# hardware filtering of Bluetooth Low Energy advertisements") and takes a
-# software path for advertisements; 64 makes the event go away.
+# EXPERIMENT variants, selected by BLEAK_WINVHCI_VARIANT:
+#   accept64: report a 64-entry LE filter accept list instead of bumble's
+#             default 8. Windows logs System event 31 for the default ("does
+#             not support the minimum buffer requirement to support the
+#             hardware filtering of Bluetooth Low Energy advertisements") and
+#             takes a software path for advertisements; 64 silences it.
+#   msft:     accept64 plus Microsoft's vendor HCI extension (advertisement
+#             monitors), which every real Windows radio has. See msft_hci.py.
 VARIANT = os.environ.get("BLEAK_WINVHCI_VARIANT", "baseline")
+
+_msft_opcode_set = False
+
+
+async def ensure_vs_msft_opcode() -> None:
+    """Make sure the radio devnode carries VsMsftOpCode before a radio starts.
+
+    Windows reads it when the radio starts. The devnode (and its registry
+    key) only exists once a radio has been enumerated, so on a fresh machine
+    a throwaway radio is created first; the driver reuses the devnode, so
+    every radio after that sees the value.
+    """
+    global _msft_opcode_set
+    if _msft_opcode_set:
+        return
+    from tests.integration.msft_hci import vs_msft_opcode_registry_script
+
+    def set_value() -> int:
+        out = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", vs_msft_opcode_registry_script()],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        return int(out.stdout.strip() or 0)
+
+    if await asyncio.to_thread(set_value) == 0:
+        logger.info("no radio devnode yet; creating a throwaway radio for its registry key")
+        async with await open_winvhci_transport() as hci_transport:
+            controller = WindowsCompatController(
+                "BLEAK-TEST-WINVHCI-PROBE",
+                host_source=hci_transport.source,
+                host_sink=hci_transport.sink,
+                link=WindowsCompatLink(),
+                public_address=WINVHCI_CONTROLLER_ADDRESS,
+            )
+            apply_dual_mode(controller)
+            await wait_for_adapter(WINVHCI_CONTROLLER_ADDRESS)
+        await wait_for_previous_radio_to_go()
+        if await asyncio.to_thread(set_value) == 0:
+            raise RuntimeError("no winvhci radio devnode to set VsMsftOpCode on")
+    logger.info("VsMsftOpCode set on the radio devnode")
+    _msft_opcode_set = True
 
 
 def _address_to_int(address: str) -> int:
@@ -253,6 +300,9 @@ async def open_winvhci_bluetooth_controller_link() -> AsyncGenerator[LocalLink, 
     """
     await wait_for_previous_radio_to_go()
 
+    if VARIANT == "msft":
+        await ensure_vs_msft_opcode()
+
     # The radio's lifetime is this handle's lifetime, so the context manager is
     # what stops a failed test leaving a radio behind for the next one.
     async with await open_winvhci_transport() as hci_transport:
@@ -264,7 +314,13 @@ async def open_winvhci_bluetooth_controller_link() -> AsyncGenerator[LocalLink, 
         # WindowsCompatController rather than Controller, for three reasons
         # recorded in winvhci.bumble_compat. Each shows up as the Windows stack
         # stopping mid-bring-up.
-        windows_controller = WindowsCompatController(
+        controller_class: type[Controller] = WindowsCompatController
+        if VARIANT == "msft":
+            from tests.integration.msft_hci import MsftWindowsCompatController
+
+            controller_class = MsftWindowsCompatController
+
+        windows_controller = controller_class(
             "BLEAK-TEST-WINVHCI",
             host_source=hci_transport.source,
             host_sink=hci_transport.sink,
@@ -276,7 +332,7 @@ async def open_winvhci_bluetooth_controller_link() -> AsyncGenerator[LocalLink, 
         # Read_Local_Supported_Features when it sees that.
         apply_dual_mode(windows_controller)
 
-        if VARIANT == "accept64":
+        if VARIANT in ("accept64", "msft"):
             windows_controller.filter_accept_list_size = 64
 
         await wait_for_adapter(WINVHCI_CONTROLLER_ADDRESS)
