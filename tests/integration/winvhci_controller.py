@@ -9,6 +9,7 @@ if TYPE_CHECKING:
 import asyncio
 import contextlib
 import logging
+import secrets
 from collections.abc import AsyncGenerator
 from typing import cast
 
@@ -24,12 +25,25 @@ from winvhci.bumble_compat import (
 from winvhci.device import VhciDevice, VhciStats
 from winvhci.transport import open_winvhci_transport
 
-# Windows connects as central using this as its public identity address. It is
-# also how our adapter is told apart from real hardware, the way the BlueZ
-# equivalent uses its manufacturer ID.
-WINVHCI_CONTROLLER_ADDRESS = "F0:F1:F2:F3:F4:F5"
+# Windows connects as central using the radio's public identity address. The
+# address is also how our adapter is told apart from real hardware, the way the
+# BlueZ equivalent uses its manufacturer ID.
+#
+# EXPERIMENT: a fresh address per radio. Every radio used to share one address,
+# so each test's radio reused the identity of one Windows had just surprise
+# removed, and the ~40s hangs line up with Device Association Service "internal
+# DAS error" events (System event 3503). This checks whether state DAS keeps
+# per radio address is what trips it.
+WINVHCI_CONTROLLER_ADDRESS_PREFIX = "F0:F1:F2"
 
 logger = logging.getLogger(__name__)
+
+
+def new_controller_address() -> str:
+    """A public address for a new radio, unique to it."""
+    return WINVHCI_CONTROLLER_ADDRESS_PREFIX + "".join(
+        f":{b:02X}" for b in secrets.token_bytes(3)
+    )
 
 
 def _address_to_int(address: str) -> int:
@@ -237,39 +251,6 @@ async def check_for_packet_loss(hci_transport: Transport, baseline: VhciStats) -
         )
 
 
-#: How long Windows is given to drop its LE links before the radio is removed.
-#: It drops a link about 3s after the last handle to the device is closed.
-LINKS_DOWN_TIMEOUT = 10.0
-
-
-async def wait_for_links_down(
-    controller: Controller, timeout: float = LINKS_DOWN_TIMEOUT
-) -> None:
-    """
-    Wait until Windows has dropped every LE link on our radio.
-
-    BleakClient.disconnect() on WinRT returns once it has closed its handles,
-    but Windows keeps the link up for about 3s after that. Removing the radio
-    inside that window leaves the stack tearing the link down under the next
-    test, which is the suspected cause of WinRT calls hanging ~40s.
-    """
-    loop = asyncio.get_running_loop()
-    start = loop.time()
-
-    while controller.le_connections:
-        if loop.time() - start >= timeout:
-            logger.warning(
-                "Windows still has %d LE link(s) up %.0fs after the test; "
-                "removing the radio anyway",
-                len(controller.le_connections),
-                timeout,
-            )
-            return
-        await asyncio.sleep(0.05)
-
-    logger.info("LE links down after %.3fs", loop.time() - start)
-
-
 @contextlib.asynccontextmanager
 async def open_winvhci_bluetooth_controller_link() -> AsyncGenerator[LocalLink, None]:
     """
@@ -277,6 +258,9 @@ async def open_winvhci_bluetooth_controller_link() -> AsyncGenerator[LocalLink, 
     that is connected to the Windows Bluetooth stack through the winvhci driver.
     """
     await wait_for_previous_radio_to_go()
+
+    address = new_controller_address()
+    logger.info("new radio will use address %s", address)
 
     # The radio's lifetime is this handle's lifetime, so the context manager is
     # what stops a failed test leaving a radio behind for the next one.
@@ -294,14 +278,14 @@ async def open_winvhci_bluetooth_controller_link() -> AsyncGenerator[LocalLink, 
             host_source=hci_transport.source,
             host_sink=hci_transport.sink,
             link=link,
-            public_address=WINVHCI_CONTROLLER_ADDRESS,
+            public_address=address,
         )
 
         # Bumble reports itself LE-only, and Windows stops dead after
         # Read_Local_Supported_Features when it sees that.
         apply_dual_mode(windows_controller)
 
-        await wait_for_adapter(WINVHCI_CONTROLLER_ADDRESS)
+        await wait_for_adapter(address)
 
         # After bring-up: the counters are cumulative for the life of the
         # device node, so each module would inherit earlier teardowns.
@@ -310,7 +294,6 @@ async def open_winvhci_bluetooth_controller_link() -> AsyncGenerator[LocalLink, 
         try:
             yield link
         finally:
-            await wait_for_links_down(windows_controller)
             await check_for_packet_loss(hci_transport, baseline)
 
 

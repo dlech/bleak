@@ -69,6 +69,18 @@ jobs:
               $end.AddMilliseconds(-$ms), $end, $ms, $e.Id, $svc, $dev, $guid
           }
 
+      # System event 3503 ("internal DAS error") lines up with every ~40s hang.
+      - name: Device Association Service events
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: |
+          $events = Get-WinEvent -FilterHashtable @{ LogName = 'System'; ProviderName = 'Microsoft-Windows-DeviceAssociationService' } -ErrorAction SilentlyContinue |
+            Sort-Object TimeCreated
+          "DAS events: $(@($events).Count), 3503: $(@($events | Where-Object Id -eq 3503).Count)"
+          foreach ($e in $events) {
+            "{0:HH:mm:ss.fff} UTC  id {1}  {2}" -f $e.TimeCreated.ToUniversalTime(), $e.Id, (($e.Properties | ForEach-Object Value) -join ' | ')
+          }
+
       - name: Export event logs
         if: ${{ !cancelled() }}
         shell: pwsh

@@ -30,11 +30,6 @@ async def test_connect_multiple_times(bumble_peripheral: Device):
     async with BleakClient(device):
         pass
 
-    # Windows keeps the link up for about 3s after disconnect() returns.
-    async with async_timeout(10):
-        while bumble_peripheral.connections:
-            await asyncio.sleep(0.05)
-
     await bumble_peripheral.start_advertising()
 
     async with BleakClient(device):
