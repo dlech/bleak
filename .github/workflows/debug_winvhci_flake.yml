@@ -55,7 +55,11 @@ jobs:
           FORCE_COLOR: 1
           # Through the environment rather than poe's arguments, which would
           # split the format string on its spaces.
+          # Minidump DAS, dasHost, bthserv and python when a test runs past 15s,
+          # i.e. inside the ~40s hang. See tests/integration/dump_on_slow_test.py.
+          BLEAK_DUMP_ON_SLOW_TEST: ${{ github.workspace }}\dumps
           PYTEST_ADDOPTS: >-
+            -p tests.integration.dump_on_slow_test
             --log-level=DEBUG
             "--log-format=%(asctime)s.%(msecs)03d %(levelname)s %(name)s: %(message)s"
             --log-date-format=%H:%M:%S
@@ -143,6 +147,17 @@ jobs:
             "{0:HH:mm:ss.fff} UTC  id {1}  {2}" -f $e.TimeCreated.ToUniversalTime(), $e.Id, (($e.Properties | ForEach-Object Value) -join ' | ')
           }
 
+      # A crashing DAS provider host (dasHost.exe) would show up here, not in System.
+      - name: Application crashes and errors
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: |
+          $since = (Get-Date).AddHours(-1)
+          Get-WinEvent -FilterHashtable @{ LogName = 'Application'; Level = 1, 2; StartTime = $since } -ErrorAction SilentlyContinue |
+            Sort-Object TimeCreated | ForEach-Object {
+              "{0:HH:mm:ss.fff} UTC  {1}  id {2}  {3}" -f $_.TimeCreated.ToUniversalTime(), $_.ProviderName, $_.Id, ((($_.Message -split "`n") | Select-Object -First 3) -join ' / ')
+            }
+
       - name: Export event logs
         if: ${{ !cancelled() }}
         shell: pwsh
@@ -154,7 +169,8 @@ jobs:
             'Microsoft-Windows-Kernel-PnP/Configuration',
             'Microsoft-Windows-DeviceSetupManager/Admin',
             'Microsoft-Windows-DeviceSetupManager/Operational',
-            'System'
+            'System',
+            'Application'
           )) {
             $file = Join-Path evtx (($log -replace '[/ ]', '_') + '.evtx')
             wevtutil epl $log $file 2>$null
@@ -166,8 +182,11 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: diagnostics-py${{ matrix.python-version }}-${{ matrix.attempt }}
+          # Dumps are ~325MB per failing job; keep them briefly.
+          retention-days: 3
           path: |
             junit.xml
             evtx/
             bleak-etw.etl
             bleak-etw.csv
+            dumps/
