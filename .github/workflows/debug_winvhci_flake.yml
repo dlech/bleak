@@ -1,0 +1,97 @@
+# Temporary: hunt the flaky Windows integration tests. Not for merging.
+#
+# Each flaky failure is one WinRT call (from_bluetooth_address_async or
+# DeviceInformation.FindAllAsync) hanging ~40s then failing with E_FAIL or
+# E_ABORT. Locally, BthMini holds the PnP device event queue for up to ~34s
+# (Kernel-PnP/Driver Watchdog events 900/901, 904/905). This records both sides
+# with timestamps so they can be lined up: the pytest log for failing tests at
+# DEBUG, which includes bumble's HCI trace, and the watchdog holds.
+name: Debug winvhci flake
+
+on:
+  push:
+    branches: [debug-winvhci-flake]
+  workflow_dispatch:
+
+jobs:
+  integration_tests_winvhci:
+    name: "Windows integration tests"
+    runs-on: "windows-11-vs2026-arm"
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["310", "311", "312", "313", "314"]
+        attempt: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the winvhci driver
+        uses: dlech/windows-vhci-driver/actions/install@v1.3.0
+        with:
+          version: v1.3.0
+
+      - name: Install the latest version of uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          version: "latest"
+
+      - name: Run pytest
+        env:
+          FORCE_COLOR: 1
+          # Through the environment rather than poe's arguments, which would
+          # split the format string on its spaces.
+          PYTEST_ADDOPTS: >-
+            --log-level=DEBUG
+            "--log-format=%(asctime)s.%(msecs)03d %(levelname)s %(name)s: %(message)s"
+            --log-date-format=%H:%M:%S
+            --durations=15
+        run: |
+          "pytest start (UTC): $([DateTime]::UtcNow.ToString('HH:mm:ss.fff'))"
+          uv run poe test-py${{ matrix.python-version }} --bleak-vhci --junitxml=junit.xml -o junit_family=legacy
+
+      # Always, so passing jobs give a baseline to compare the failing ones with.
+      - name: PnP watchdog holds
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: |
+          "now (UTC): $([DateTime]::UtcNow.ToString('HH:mm:ss.fff'))"
+          $events = Get-WinEvent -LogName 'Microsoft-Windows-Kernel-PnP/Driver Watchdog' -ErrorAction SilentlyContinue |
+            Where-Object Id -in 901, 905 | Sort-Object TimeCreated
+          if (-not $events) { 'no watchdog holds recorded'; exit 0 }
+          foreach ($e in $events) {
+            $m = $e.Message
+            $ms = [int][regex]::Match($m, 'milliseconds: (\d+)').Groups[1].Value
+            $end = $e.TimeCreated.ToUniversalTime()
+            $dev = [regex]::Match($m, 'Device: (\S+)').Groups[1].Value
+            $svc = [regex]::Match($m, 'Service: (\S+)').Groups[1].Value
+            $guid = [regex]::Match($m, 'Event GUID: (\S+)').Groups[1].Value
+            "hold {0:HH:mm:ss.fff} -> {1:HH:mm:ss.fff} UTC {2,6} ms  id {3}  {4} {5} {6}" -f `
+              $end.AddMilliseconds(-$ms), $end, $ms, $e.Id, $svc, $dev, $guid
+          }
+
+      - name: Export event logs
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force evtx | Out-Null
+          foreach ($log in @(
+            'Microsoft-Windows-Kernel-PnP/Driver Watchdog',
+            'Microsoft-Windows-Kernel-PnP/Device Management',
+            'Microsoft-Windows-Kernel-PnP/Configuration',
+            'Microsoft-Windows-DeviceSetupManager/Admin',
+            'Microsoft-Windows-DeviceSetupManager/Operational',
+            'System'
+          )) {
+            $file = Join-Path evtx (($log -replace '[/ ]', '_') + '.evtx')
+            wevtutil epl $log $file 2>$null
+          }
+          Copy-Item C:\Windows\INF\setupapi.dev.log evtx\ -ErrorAction SilentlyContinue
+
+      - name: Upload diagnostics
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: diagnostics-py${{ matrix.python-version }}-${{ matrix.attempt }}
+          path: |
+            junit.xml
+            evtx/
