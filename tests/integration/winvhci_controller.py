@@ -9,7 +9,6 @@ if TYPE_CHECKING:
 import asyncio
 import contextlib
 import logging
-import os
 from collections.abc import AsyncGenerator
 from typing import cast
 
@@ -31,11 +30,6 @@ from winvhci.transport import open_winvhci_transport
 WINVHCI_CONTROLLER_ADDRESS = "F0:F1:F2:F3:F4:F5"
 
 logger = logging.getLogger(__name__)
-
-# EXPERIMENT: timing variants for the CI A/B of the ~40s DAS hang.
-#   settle_removal: extra settle after the previous radio's devnode is gone
-#   settle_adapter: extra settle after the new adapter appears
-VARIANT = os.environ.get("BLEAK_WINVHCI_VARIANT", "baseline")
 
 
 def _address_to_int(address: str) -> int:
@@ -73,9 +67,6 @@ async def wait_for_previous_radio_to_go(timeout: float = 90.0) -> None:
     while True:
         alive = await asyncio.to_thread(radios_alive)
         if alive == 0:
-            if VARIANT == "settle_removal":
-                logger.info("variant settle_removal: 10s after the radio went")
-                await asyncio.sleep(10)
             return
         if loop.time() >= deadline:
             raise TimeoutError(
@@ -278,10 +269,6 @@ async def open_winvhci_bluetooth_controller_link() -> AsyncGenerator[LocalLink, 
         apply_dual_mode(windows_controller)
 
         await wait_for_adapter(WINVHCI_CONTROLLER_ADDRESS)
-
-        if VARIANT == "settle_adapter":
-            logger.info("variant settle_adapter: 5s after the adapter came up")
-            await asyncio.sleep(5)
 
         # After bring-up: the counters are cumulative for the life of the
         # device node, so each module would inherit earlier teardowns.
