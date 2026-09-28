@@ -9,7 +9,6 @@ if TYPE_CHECKING:
 import asyncio
 import contextlib
 import logging
-import secrets
 from collections.abc import AsyncGenerator
 from typing import cast
 
@@ -25,25 +24,12 @@ from winvhci.bumble_compat import (
 from winvhci.device import VhciDevice, VhciStats
 from winvhci.transport import open_winvhci_transport
 
-# Windows connects as central using the radio's public identity address. The
-# address is also how our adapter is told apart from real hardware, the way the
-# BlueZ equivalent uses its manufacturer ID.
-#
-# EXPERIMENT: a fresh address per radio. Every radio used to share one address,
-# so each test's radio reused the identity of one Windows had just surprise
-# removed, and the ~40s hangs line up with Device Association Service "internal
-# DAS error" events (System event 3503). This checks whether state DAS keeps
-# per radio address is what trips it.
-WINVHCI_CONTROLLER_ADDRESS_PREFIX = "F0:F1:F2"
+# Windows connects as central using this as its public identity address. It is
+# also how our adapter is told apart from real hardware, the way the BlueZ
+# equivalent uses its manufacturer ID.
+WINVHCI_CONTROLLER_ADDRESS = "F0:F1:F2:F3:F4:F5"
 
 logger = logging.getLogger(__name__)
-
-
-def new_controller_address() -> str:
-    """A public address for a new radio, unique to it."""
-    return WINVHCI_CONTROLLER_ADDRESS_PREFIX + "".join(
-        f":{b:02X}" for b in secrets.token_bytes(3)
-    )
 
 
 def _address_to_int(address: str) -> int:
@@ -259,9 +245,6 @@ async def open_winvhci_bluetooth_controller_link() -> AsyncGenerator[LocalLink, 
     """
     await wait_for_previous_radio_to_go()
 
-    address = new_controller_address()
-    logger.info("new radio will use address %s", address)
-
     # The radio's lifetime is this handle's lifetime, so the context manager is
     # what stops a failed test leaving a radio behind for the next one.
     async with await open_winvhci_transport() as hci_transport:
@@ -278,14 +261,14 @@ async def open_winvhci_bluetooth_controller_link() -> AsyncGenerator[LocalLink, 
             host_source=hci_transport.source,
             host_sink=hci_transport.sink,
             link=link,
-            public_address=address,
+            public_address=WINVHCI_CONTROLLER_ADDRESS,
         )
 
         # Bumble reports itself LE-only, and Windows stops dead after
         # Read_Local_Supported_Features when it sees that.
         apply_dual_mode(windows_controller)
 
-        await wait_for_adapter(address)
+        await wait_for_adapter(WINVHCI_CONTROLLER_ADDRESS)
 
         # After bring-up: the counters are cumulative for the life of the
         # device node, so each module would inherit earlier teardowns.

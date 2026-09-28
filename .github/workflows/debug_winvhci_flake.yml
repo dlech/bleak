@@ -35,6 +35,21 @@ jobs:
         with:
           version: "latest"
 
+      # ETW on the Device Association Service (where the ~40s hang sits, per
+      # System event 3503) plus the Bluetooth port/miniport drivers. Verified
+      # on a VM: DAS emits paired start/stop events (5500/5501, 5502/5503,
+      # 5504/5505) with activity IDs and result codes, so a failing job should
+      # show the pair spanning the hang and how it ended.
+      - name: Start ETW trace
+        shell: pwsh
+        run: |
+          logman create trace bleak-etw -ets -o "$env:GITHUB_WORKSPACE\bleak-etw.etl" -mode Circular -max 512 `
+            -p '{56C71C31-CFBD-4CDD-8559-505E042BBBE1}' 0xffffffffffffffff 0xff   # DeviceAssociationService
+          logman update trace bleak-etw -ets -p '{8A1F9517-3A8C-4A9E-A018-4F17A200F277}' 0xffffffffffffffff 0xff   # BTH-BTHPORT
+          logman update trace bleak-etw -ets -p '{DB25B328-A6F6-444F-9D97-A50E20217D16}' 0xffffffffffffffff 0xff   # Bluetooth-Bthmini
+          logman update trace bleak-etw -ets -p '{4AF188AC-E9C4-4C11-B07B-1FABC07DFEB2}' 0xffffffffffffffff 0xff   # Bluetooth-BthLEPrepairing
+          logman query bleak-etw -ets | Select-String 'Status|Provider|Max'
+
       - name: Run pytest
         env:
           FORCE_COLOR: 1
@@ -48,6 +63,53 @@ jobs:
         run: |
           "pytest start (UTC): $([DateTime]::UtcNow.ToString('HH:mm:ss.fff'))"
           uv run poe test-py${{ matrix.python-version }} --bleak-vhci --junitxml=junit.xml -o junit_family=legacy
+
+      - name: Stop ETW trace and digest DAS operations
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: |
+          logman stop bleak-etw -ets | Out-Null
+          tracerpt bleak-etw.etl -of CSV -o bleak-etw.csv -y | Out-Null
+          $rows = Import-Csv bleak-etw.csv
+          "events: $($rows.Count)"
+          $rows | Group-Object 'Event Name' | Sort-Object Count -Descending | ForEach-Object { "{0,7}  {1}" -f $_.Count, $_.Name }
+
+          $das = @($rows | Where-Object { $_.'Event Name' -match 'DeviceAssociation' } | ForEach-Object {
+            [pscustomobject]@{
+              T = [DateTime]::FromFileTimeUtc([long]$_.'Clock-Time'); Id = [int]$_.'Event ID'; Act = $_.'Activity ID'
+              Pid = $_.PID; Tid = $_.TID; Data = (($_.'User Data') -replace '\s+', ' ')
+            }
+          })
+          "DAS events: $($das.Count)"
+          $ids = $das | Group-Object Id | Sort-Object Name | ForEach-Object { "$($_.Name)x$($_.Count)" }
+          "DAS event ids: $($ids -join ' ')"
+
+          # Pair start/stop events by activity ID (odd id = stop of the preceding even id)
+          # and report anything slow or with a non-zero result.
+          "--- DAS operations slower than 2s or with a non-zero result:"
+          $open = @{}
+          foreach ($e in $das | Sort-Object T) {
+            if ($e.Id % 2 -eq 0) { $open[$e.Act] = $e; continue }
+            $s = $open[$e.Act]; if (-not $s) { continue }
+            $dur = ($e.T - $s.T).TotalSeconds
+            # 5501/5503 carry a result; 5505 carries the provider name.
+            $failed = ($e.Id -in 5501, 5503) -and ($e.Data -notmatch '^(0x0|0)?$')
+            if ($dur -gt 2 -or $failed) {
+              "  {0:HH:mm:ss.fff} -> {1:HH:mm:ss.fff} UTC {2,7:N3}s  id {3}->{4}  pid {5}  start[{6}]  stop[{7}]" -f $s.T, $e.T, $dur, $s.Id, $e.Id, $s.Pid, $s.Data, $e.Data
+            }
+            $open.Remove($e.Act)
+          }
+          "--- DAS operations still open at the end of the trace:"
+          $open.Values | Sort-Object T | ForEach-Object { "  {0:HH:mm:ss.fff} UTC id {1} pid {2} [{3}]" -f $_.T, $_.Id, $_.Pid, $_.Data }
+
+          # Everything DAS logged in the 60s before each 3503.
+          $bad = Get-WinEvent -FilterHashtable @{ LogName = 'System'; ProviderName = 'Microsoft-Windows-DeviceAssociationService'; Id = 3503 } -ErrorAction SilentlyContinue
+          foreach ($b in $bad) {
+            $t = $b.TimeCreated.ToUniversalTime()
+            "--- DAS trace in the 60s before 3503 at $($t.ToString('HH:mm:ss.fff')) UTC:"
+            $das | Where-Object { $_.T -ge $t.AddSeconds(-60) -and $_.T -le $t.AddSeconds(2) } | Sort-Object T |
+              ForEach-Object { "  {0:HH:mm:ss.fff} id {1} pid {2} tid {3} act {4} [{5}]" -f $_.T, $_.Id, $_.Pid, $_.Tid, $_.Act, $_.Data }
+          }
 
       # Always, so passing jobs give a baseline to compare the failing ones with.
       - name: PnP watchdog holds
@@ -107,3 +169,5 @@ jobs:
           path: |
             junit.xml
             evtx/
+            bleak-etw.etl
+            bleak-etw.csv
