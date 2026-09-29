@@ -55,12 +55,12 @@ jobs:
           Invoke-WebRequest -Uri https://github.com/thebookisclosed/ViVe/releases/download/v0.3.4/ViVeTool-v0.3.4-SnapdragonArm64.zip -OutFile vive.zip
           Expand-Archive vive.zip -DestinationPath vive
           "--- before:"
-          foreach ($id in 60814245, 60176144, 58717931, 59720933) { "[$id] " + ((.ive\ViVeTool.exe /query /id:$id 2>&1 | Select-Object -Skip 2) -join ' ') }
+          foreach ($id in 60814245, 60176144, 58717931, 59720933) { "[$id] " + ((.\vive\ViVeTool.exe /query /id:$id 2>&1 | Select-Object -Skip 2) -join ' ') }
           if ('${{ matrix.variant }}' -eq 'flag') {
-            .ive\ViVeTool.exe /enable /id:60814245
+            .\vive\ViVeTool.exe /enable /id:60814245
             "--- after:"
-            .ive\ViVeTool.exe /query /id:60814245
-            "changestamp: " + (.ive\ViVeTool.exe /changestamp 2>&1 | Select-Object -Last 1)
+            .\vive\ViVeTool.exe /query /id:60814245
+            "changestamp: " + (.\vive\ViVeTool.exe /changestamp 2>&1 | Select-Object -Last 1)
           }
 
       - name: Start ETW trace
