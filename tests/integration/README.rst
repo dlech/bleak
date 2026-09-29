@@ -136,8 +136,9 @@ same path also allocates sequence numbers with a plain, non-atomic increment
 unless ``das.dll``'s feature ``bugfix_60814245`` is on. The runner image ships
 with it off; a QEMU guest with the same build never hit the hang until that
 feature was turned off to match the runner, and then hit it three times in a few
-hours. ``das.dll`` reads feature state from the boot-time snapshot only, so the
-fix cannot be switched on inside a CI job. Waiting between steps, unique radio
+hours; turning it back on (which needs a reboot, because ``das.dll`` reads
+feature state from the boot-time snapshot only, so it cannot be done inside a CI
+job) did not remove the hang either. Waiting between steps, unique radio
 addresses, a larger LE filter accept list and Microsoft's vendor HCI extension
 were each tried on CI without removing it.
 
