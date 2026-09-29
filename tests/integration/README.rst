@@ -112,6 +112,40 @@ virtual one. If a real radio wins that election the fixture fails with an error 
 both addresses, so disable any physical Bluetooth adapter before running the tests.
 
 
+Windows: Device Association Service hang
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+On GitHub's ``windows-11-vs2026-arm`` runners, about one connect in a hundred hangs
+for 38.5 seconds and then fails: ``BluetoothLEDevice.FromBluetoothAddressAsync``
+raises ``OSError: [WinError -2147467259] Unspecified error``, or
+``DeviceInformation.FindAllAsync`` raises ``[WinError -2147467260] Operation
+aborted``, with System event 3503 from ``Microsoft-Windows-DeviceAssociationService``
+("endpoint discovery failure") at the moment of failure. The Windows integration
+job retries those two errors, and only those, once or twice.
+
+The cause is in Windows, not in bleak, bumble or the driver. In ``das.dll``
+10.0.26100.9444, ``OnQueryStateUpdateStub`` pushes a query-state work item onto a
+lock-free list before it writes the item's sequence number, and
+``CQueryContext::OnQueryStateUpdateWork`` applies updates strictly in sequence:
+when it reads a number that was never allocated it sleeps ``100 * n^2`` ms for
+eleven rounds (38.5 s in all), then abandons the query. Minidumps taken during the
+hang show the applier waiting for garbage sequence numbers (``0xF2F3F4F4``, the
+bytes of a freed radio address; ``0xFFFFFFFF``; ``0x3DB``), ETW shows the
+provider query created and never dispatched with no HCI traffic underneath, and
+the same build and feature configuration on a QEMU guest never hit it in some
+7,000 attempts; the runner's hardware does. Waiting between steps, unique radio
+addresses, a larger LE filter accept list, Microsoft's vendor HCI extension and
+Microsoft's own feature-flagged fixes in ``das.dll`` were each tried on CI without
+removing it.
+
+To look at a fresh case, run the "Diagnose the winvhci DAS hang" workflow: it
+records DEBUG logs with the HCI trace, an ETW trace of DAS and the Bluetooth
+drivers, the PnP and DAS event logs, and minidumps of DAS, ``bthserv`` and the
+test process taken 15 seconds into the hang. The dump hook is
+``tests/integration/dump_on_slow_test.py`` and can be used locally with
+``-p tests.integration.dump_on_slow_test`` and ``BLEAK_DUMP_ON_SLOW_TEST=<dir>``.
+
+
 Android
 ~~~~~~~
 

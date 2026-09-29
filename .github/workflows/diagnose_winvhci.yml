@@ -1,0 +1,199 @@
+# On demand: the Windows integration tests with diagnostics for the Device
+# Association Service hang described in tests/integration/README.rst. Each job
+# records timestamped DEBUG logs (including bumble's HCI trace) for failing
+# tests, an ETW trace of DAS and the Bluetooth drivers with a digest of slow or
+# failed DAS operations, PnP watchdog holds, DAS and Application event logs,
+# and minidumps of DAS, bthserv and the test process taken 15s into a hang.
+name: Diagnose the winvhci DAS hang
+
+on:
+  workflow_dispatch:
+    inputs:
+      attempts:
+        description: Jobs to run (the hang hits roughly one in seven)
+        default: "8"
+
+jobs:
+  integration_tests_winvhci:
+    # Unique per job: gh's per-job log fetch keys on the name.
+    name: "Windows integration tests (${{ matrix.attempt }})"
+    if: ${{ matrix.attempt <= fromJSON(inputs.attempts) }}
+    runs-on: "windows-11-vs2026-arm"
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["313"]
+        attempt: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the winvhci driver
+        uses: dlech/windows-vhci-driver/actions/install@v1.3.0
+        with:
+          version: v1.3.0
+
+      # Pinned: resolving "latest" asks the GitHub API and failed twice in one run.
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.12.19"
+
+      # ETW on the Device Association Service (where the ~40s hang sits, per
+      # System event 3503) plus the Bluetooth port/miniport drivers. Verified
+      # on a VM: DAS emits paired start/stop events (5500/5501, 5502/5503,
+      # 5504/5505) with activity IDs and result codes, so a failing job should
+      # show the pair spanning the hang and how it ended.
+      # das.dll allocates query-state sequence numbers non-atomically unless WIL
+      # feature 60814245 (a Microsoft bug fix behind a velocity flag) is enabled;
+      # a lost number is exactly the 38.5s sleep-poll seen in the hang dumps. The
+      # VM that never reproduces has the flag enabled by an experiment config.
+      - name: Start ETW trace
+        shell: pwsh
+        run: |
+          logman create trace bleak-etw -ets -o "$env:GITHUB_WORKSPACE\bleak-etw.etl" -mode Circular -max 512 `
+            -p '{56C71C31-CFBD-4CDD-8559-505E042BBBE1}' 0xffffffffffffffff 0xff   # DeviceAssociationService
+          logman update trace bleak-etw -ets -p '{8A1F9517-3A8C-4A9E-A018-4F17A200F277}' 0xffffffffffffffff 0xff   # BTH-BTHPORT
+          logman update trace bleak-etw -ets -p '{DB25B328-A6F6-444F-9D97-A50E20217D16}' 0xffffffffffffffff 0xff   # Bluetooth-Bthmini
+          logman update trace bleak-etw -ets -p '{4AF188AC-E9C4-4C11-B07B-1FABC07DFEB2}' 0xffffffffffffffff 0xff   # Bluetooth-BthLEPrepairing
+          logman query bleak-etw -ets | Select-String 'Status|Provider|Max'
+
+      - name: Run pytest
+        env:
+          FORCE_COLOR: 1
+          # Through the environment rather than poe's arguments, which would
+          # split the format string on its spaces.
+          # Minidump DAS, dasHost, bthserv and python when a test runs past 15s,
+          # i.e. inside the ~40s hang. See tests/integration/dump_on_slow_test.py.
+          BLEAK_DUMP_ON_SLOW_TEST: ${{ github.workspace }}\dumps
+          PYTEST_ADDOPTS: >-
+            -p tests.integration.dump_on_slow_test
+            --log-level=DEBUG
+            "--log-format=%(asctime)s.%(msecs)03d %(levelname)s %(name)s: %(message)s"
+            --log-date-format=%H:%M:%S
+            --durations=15
+        run: |
+          "pytest start (UTC): $([DateTime]::UtcNow.ToString('HH:mm:ss.fff'))"
+          uv run poe test-py${{ matrix.python-version }} --bleak-vhci --junitxml=junit.xml -o junit_family=legacy
+
+      - name: Stop ETW trace and digest DAS operations
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: |
+          logman stop bleak-etw -ets | Out-Null
+          tracerpt bleak-etw.etl -of CSV -o bleak-etw.csv -y | Out-Null
+          $rows = Import-Csv bleak-etw.csv
+          "events: $($rows.Count)"
+          $rows | Group-Object 'Event Name' | Sort-Object Count -Descending | ForEach-Object { "{0,7}  {1}" -f $_.Count, $_.Name }
+
+          $das = @($rows | Where-Object { $_.'Event Name' -match 'DeviceAssociation' } | ForEach-Object {
+            [pscustomobject]@{
+              T = [DateTime]::FromFileTimeUtc([long]$_.'Clock-Time'); Id = [int]$_.'Event ID'; Act = $_.'Activity ID'
+              Pid = $_.PID; Tid = $_.TID; Data = (($_.'User Data') -replace '\s+', ' ')
+            }
+          })
+          "DAS events: $($das.Count)"
+          $ids = $das | Group-Object Id | Sort-Object Name | ForEach-Object { "$($_.Name)x$($_.Count)" }
+          "DAS event ids: $($ids -join ' ')"
+
+          # Pair start/stop events by activity ID (odd id = stop of the preceding even id)
+          # and report anything slow or with a non-zero result.
+          "--- DAS operations slower than 2s or with a non-zero result:"
+          $open = @{}
+          foreach ($e in $das | Sort-Object T) {
+            if ($e.Id % 2 -eq 0) { $open[$e.Act] = $e; continue }
+            $s = $open[$e.Act]; if (-not $s) { continue }
+            $dur = ($e.T - $s.T).TotalSeconds
+            # 5501/5503 carry a result; 5505 carries the provider name.
+            $failed = ($e.Id -in 5501, 5503) -and ($e.Data -notmatch '^(0x0|0)?$')
+            if ($dur -gt 2 -or $failed) {
+              "  {0:HH:mm:ss.fff} -> {1:HH:mm:ss.fff} UTC {2,7:N3}s  id {3}->{4}  pid {5}  start[{6}]  stop[{7}]" -f $s.T, $e.T, $dur, $s.Id, $e.Id, $s.Pid, $s.Data, $e.Data
+            }
+            $open.Remove($e.Act)
+          }
+          "--- DAS operations still open at the end of the trace:"
+          $open.Values | Sort-Object T | ForEach-Object { "  {0:HH:mm:ss.fff} UTC id {1} pid {2} [{3}]" -f $_.T, $_.Id, $_.Pid, $_.Data }
+
+          # Everything DAS logged in the 60s before each 3503.
+          $bad = Get-WinEvent -FilterHashtable @{ LogName = 'System'; ProviderName = 'Microsoft-Windows-DeviceAssociationService'; Id = 3503 } -ErrorAction SilentlyContinue
+          foreach ($b in $bad) {
+            $t = $b.TimeCreated.ToUniversalTime()
+            "--- DAS trace in the 60s before 3503 at $($t.ToString('HH:mm:ss.fff')) UTC:"
+            $das | Where-Object { $_.T -ge $t.AddSeconds(-60) -and $_.T -le $t.AddSeconds(2) } | Sort-Object T |
+              ForEach-Object { "  {0:HH:mm:ss.fff} id {1} pid {2} tid {3} act {4} [{5}]" -f $_.T, $_.Id, $_.Pid, $_.Tid, $_.Act, $_.Data }
+          }
+
+      # Always, so passing jobs give a baseline to compare the failing ones with.
+      - name: PnP watchdog holds
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: |
+          "now (UTC): $([DateTime]::UtcNow.ToString('HH:mm:ss.fff'))"
+          $events = Get-WinEvent -LogName 'Microsoft-Windows-Kernel-PnP/Driver Watchdog' -ErrorAction SilentlyContinue |
+            Where-Object Id -in 901, 905 | Sort-Object TimeCreated
+          if (-not $events) { 'no watchdog holds recorded'; exit 0 }
+          foreach ($e in $events) {
+            $m = $e.Message
+            $ms = [int][regex]::Match($m, 'milliseconds: (\d+)').Groups[1].Value
+            $end = $e.TimeCreated.ToUniversalTime()
+            $dev = [regex]::Match($m, 'Device: (\S+)').Groups[1].Value
+            $svc = [regex]::Match($m, 'Service: (\S+)').Groups[1].Value
+            $guid = [regex]::Match($m, 'Event GUID: (\S+)').Groups[1].Value
+            "hold {0:HH:mm:ss.fff} -> {1:HH:mm:ss.fff} UTC {2,6} ms  id {3}  {4} {5} {6}" -f `
+              $end.AddMilliseconds(-$ms), $end, $ms, $e.Id, $svc, $dev, $guid
+          }
+
+      # System event 3503 ("internal DAS error") lines up with every ~40s hang.
+      - name: Device Association Service events
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: |
+          $events = Get-WinEvent -FilterHashtable @{ LogName = 'System'; ProviderName = 'Microsoft-Windows-DeviceAssociationService' } -ErrorAction SilentlyContinue |
+            Sort-Object TimeCreated
+          "DAS events: $(@($events).Count), 3503: $(@($events | Where-Object Id -eq 3503).Count)"
+          foreach ($e in $events) {
+            "{0:HH:mm:ss.fff} UTC  id {1}  {2}" -f $e.TimeCreated.ToUniversalTime(), $e.Id, (($e.Properties | ForEach-Object Value) -join ' | ')
+          }
+
+      # A crashing DAS provider host (dasHost.exe) would show up here, not in System.
+      - name: Application crashes and errors
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: |
+          $since = (Get-Date).AddHours(-1)
+          Get-WinEvent -FilterHashtable @{ LogName = 'Application'; Level = 1, 2; StartTime = $since } -ErrorAction SilentlyContinue |
+            Sort-Object TimeCreated | ForEach-Object {
+              "{0:HH:mm:ss.fff} UTC  {1}  id {2}  {3}" -f $_.TimeCreated.ToUniversalTime(), $_.ProviderName, $_.Id, ((($_.Message -split "`n") | Select-Object -First 3) -join ' / ')
+            }
+
+      - name: Export event logs
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force evtx | Out-Null
+          foreach ($log in @(
+            'Microsoft-Windows-Kernel-PnP/Driver Watchdog',
+            'Microsoft-Windows-Kernel-PnP/Device Management',
+            'Microsoft-Windows-Kernel-PnP/Configuration',
+            'Microsoft-Windows-DeviceSetupManager/Admin',
+            'Microsoft-Windows-DeviceSetupManager/Operational',
+            'System',
+            'Application'
+          )) {
+            $file = Join-Path evtx (($log -replace '[/ ]', '_') + '.evtx')
+            wevtutil epl $log $file 2>$null
+          }
+          Copy-Item C:\Windows\INF\setupapi.dev.log evtx\ -ErrorAction SilentlyContinue
+
+      - name: Upload diagnostics
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: diagnostics-${{ matrix.attempt }}
+          # Dumps are ~325MB per failing job; keep them briefly.
+          retention-days: 3
+          path: |
+            junit.xml
+            evtx/
+            bleak-etw.etl
+            bleak-etw.csv
+            dumps/
