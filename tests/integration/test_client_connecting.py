@@ -1,4 +1,5 @@
 import asyncio
+import os
 
 import pytest
 from bumble.device import Device
@@ -29,6 +30,9 @@ async def test_connect_multiple_times(bumble_peripheral: Device):
 
     async with BleakClient(device):
         pass
+
+    if os.environ.get("BLEAK_WINVHCI_VARIANT") == "gap":  # EXPERIMENT, see conftest
+        await asyncio.sleep(0.5)
 
     await bumble_peripheral.start_advertising()
 

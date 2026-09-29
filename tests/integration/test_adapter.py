@@ -1,4 +1,6 @@
+import asyncio
 import dataclasses
+import os
 from collections.abc import AsyncGenerator
 
 import pytest
@@ -69,6 +71,8 @@ async def connected_peripheral(
     # Ensure the device is connected before yielding, since the tests require it
     # to be connected to be valid.
     async with BleakClient(device) as client:
+        if os.environ.get("BLEAK_WINVHCI_VARIANT") == "gap":  # EXPERIMENT, see conftest
+            await asyncio.sleep(0.5)
         yield ConnectedPeripheral(client=client, device=device)
 
 

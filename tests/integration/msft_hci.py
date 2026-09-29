@@ -175,9 +175,12 @@ class MsftExtensionMixin:
             logger.info("MSFT monitor %d cancelled", handle)
             return bytes([STATUS_SUCCESS, sub])
         if sub == SUB_LE_SET_ADVERTISEMENT_FILTER_ENABLE:
+            # The spec allows rejecting a redundant enable/disable, but Windows
+            # sends "disable" right after Read_Supported_Features on a machine
+            # with no monitors yet, and a rejection there stopped it from
+            # installing any monitor afterwards (seen on CI). Real controllers
+            # evidently accept it; do the same.
             enable = bool(p[0])
-            if enable == self._msft_filter_enabled:
-                return bytes([STATUS_COMMAND_DISALLOWED, sub])
             self._msft_filter_enabled = enable
             logger.info("MSFT advertisement filters %s", "enabled" if enable else "disabled")
             return bytes([STATUS_SUCCESS, sub])

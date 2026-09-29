@@ -2,6 +2,7 @@ import asyncio
 import contextlib
 import functools
 import logging
+import os
 import sys
 import threading
 import time
@@ -173,6 +174,11 @@ async def find_ble_device(bumble_peripheral: Device) -> BLEDevice:
 
         device = await BleakScanner.find_device_by_name(bumble_peripheral.name)
         if device is not None:
+            # EXPERIMENT (BLEAK_WINVHCI_VARIANT=gap): every CI hang was a DAS
+            # query issued within 1ms of the scan stopping on the first
+            # advertisement; give the stack a moment first.
+            if os.environ.get("BLEAK_WINVHCI_VARIANT") == "gap":
+                await asyncio.sleep(0.5)
             return device
 
         if attempt < FIND_DEVICE_ATTEMPTS:
