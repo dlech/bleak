@@ -24,7 +24,7 @@ jobs:
         # One Python: the version never mattered. Two controller variants, see
         # tests/integration/winvhci_controller.py.
         python-version: ["313"]
-        variant: [baseline, gap]
+        variant: [baseline, flag]
         attempt: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36]
     steps:
       - uses: actions/checkout@v4
@@ -45,6 +45,24 @@ jobs:
       # on a VM: DAS emits paired start/stop events (5500/5501, 5502/5503,
       # 5504/5505) with activity IDs and result codes, so a failing job should
       # show the pair spanning the hang and how it ended.
+      # das.dll allocates query-state sequence numbers non-atomically unless WIL
+      # feature 60814245 (a Microsoft bug fix behind a velocity flag) is enabled;
+      # a lost number is exactly the 38.5s sleep-poll seen in the hang dumps. The
+      # VM that never reproduces has the flag enabled by an experiment config.
+      - name: Query and (variant flag) enable WIL feature 60814245
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri https://github.com/thebookisclosed/ViVe/releases/download/v0.3.4/ViVeTool-v0.3.4-SnapdragonArm64.zip -OutFile vive.zip
+          Expand-Archive vive.zip -DestinationPath vive
+          "--- before:"
+          foreach ($id in 60814245, 60176144, 58717931, 59720933) { "[$id] " + ((.ive\ViVeTool.exe /query /id:$id 2>&1 | Select-Object -Skip 2) -join ' ') }
+          if ('${{ matrix.variant }}' -eq 'flag') {
+            .ive\ViVeTool.exe /enable /id:60814245
+            "--- after:"
+            .ive\ViVeTool.exe /query /id:60814245
+            "changestamp: " + (.ive\ViVeTool.exe /changestamp 2>&1 | Select-Object -Last 1)
+          }
+
       - name: Start ETW trace
         shell: pwsh
         run: |
