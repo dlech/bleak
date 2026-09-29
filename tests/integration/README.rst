@@ -130,13 +130,16 @@ lock-free list before it writes the item's sequence number, and
 when it reads a number that was never allocated it sleeps ``100 * n^2`` ms for
 eleven rounds (38.5 s in all), then abandons the query. Minidumps taken during the
 hang show the applier waiting for garbage sequence numbers (``0xF2F3F4F4``, the
-bytes of a freed radio address; ``0xFFFFFFFF``; ``0x3DB``), ETW shows the
-provider query created and never dispatched with no HCI traffic underneath, and
-the same build and feature configuration on a QEMU guest never hit it in some
-7,000 attempts; the runner's hardware does. Waiting between steps, unique radio
-addresses, a larger LE filter accept list, Microsoft's vendor HCI extension and
-Microsoft's own feature-flagged fixes in ``das.dll`` were each tried on CI without
-removing it.
+bytes of a freed radio address; ``0xFFFFFFFF``; ``0x3DB``), and ETW shows the
+provider query created and never dispatched with no HCI traffic underneath. The
+same path also allocates sequence numbers with a plain, non-atomic increment
+unless ``das.dll``'s feature ``bugfix_60814245`` is on. The runner image ships
+with it off; a QEMU guest with the same build never hit the hang until that
+feature was turned off to match the runner, and then hit it three times in a few
+hours. ``das.dll`` reads feature state from the boot-time snapshot only, so the
+fix cannot be switched on inside a CI job. Waiting between steps, unique radio
+addresses, a larger LE filter accept list and Microsoft's vendor HCI extension
+were each tried on CI without removing it.
 
 To look at a fresh case, run the "Diagnose the winvhci DAS hang" workflow: it
 records DEBUG logs with the HCI trace, an ETW trace of DAS and the Bluetooth
