@@ -133,12 +133,11 @@ hang show the applier waiting for garbage sequence numbers (``0xF2F3F4F4``, the
 bytes of a freed radio address; ``0xFFFFFFFF``; ``0x3DB``), and ETW shows the
 provider query created and never dispatched with no HCI traffic underneath. The
 same path also allocates sequence numbers with a plain, non-atomic increment
-unless ``das.dll``'s feature ``bugfix_60814245`` is on. The runner image ships
-with it off; a QEMU guest with the same build never hit the hang until that
-feature was turned off to match the runner, and then hit it three times in a few
-hours; turning it back on (which needs a reboot, because ``das.dll`` reads
-feature state from the boot-time snapshot only, so it cannot be done inside a CI
-job) did not remove the hang either. Waiting between steps, unique radio
+unless ``das.dll``'s feature ``bugfix_60814245`` is on, which the runner image
+ships off; but a QEMU guest with the same build hangs at the same rate under a
+fuzzer with that fix on or off (verified through the feature API after a reboot,
+since ``das.dll`` reads feature state from the boot-time snapshot only), so the
+flags neither cause nor cure it. Waiting between steps, unique radio
 addresses, a larger LE filter accept list and Microsoft's vendor HCI extension
 were each tried on CI without removing it.
 

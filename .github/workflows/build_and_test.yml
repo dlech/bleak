@@ -162,11 +162,11 @@ jobs:
       # order, then waits 38.5s for a sequence that never comes and fails the
       # query (System event 3503). Here that is FromBluetoothAddressAsync
       # raising E_FAIL (-2147467259) or DeviceInformation.FindAllAsync raising
-      # E_ABORT (-2147467260), about one connect in a hundred. Microsoft's
-      # feature-flagged fixes in das.dll do not remove it, and could not be
-      # applied inside a job anyway (das.dll reads feature state at boot).
-      # Neither bleak nor the test rig takes part; see "Windows: Device
-      # Association Service hang" in tests/integration/README.rst.
+      # E_ABORT (-2147467260), about one connect in a hundred. It reproduces
+      # on other machines with the same build, with or without Microsoft's
+      # feature-flagged fixes in das.dll. Neither bleak nor the test rig takes
+      # part; see "Windows: Device Association Service hang" in
+      # tests/integration/README.rst.
       - name: Run pytest
         env:
           FORCE_COLOR: 1
