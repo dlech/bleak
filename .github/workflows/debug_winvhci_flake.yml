@@ -24,7 +24,7 @@ jobs:
         # One Python: the version never mattered. Two controller variants, see
         # tests/integration/winvhci_controller.py.
         python-version: ["313"]
-        variant: [baseline, flag]
+        variant: [baseline, dispatcher]
         attempt: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36]
     steps:
       - uses: actions/checkout@v4
@@ -49,18 +49,32 @@ jobs:
       # feature 60814245 (a Microsoft bug fix behind a velocity flag) is enabled;
       # a lost number is exactly the 38.5s sleep-poll seen in the hang dumps. The
       # VM that never reproduces has the flag enabled by an experiment config.
-      - name: Query and (variant flag) enable WIL feature 60814245
+      # das.dll posts query-state updates through one of two paths: a new one
+      # behind WIL feature 43979875 (DeviceAssociation_Dispatcher) that builds
+      # the work item before submitting it, and an old one that pushes it on a
+      # global SList before assigning its sequence number, with a non-atomic
+      # increment unless bug-fix feature 60814245 is enabled. The consumer waits
+      # 38.5s for a missing sequence number: the hang. The runner image has no
+      # experiment configuration for any of these; the VM that never hangs has
+      # several. A runtime change may not reach the running service, so restart
+      # it as well.
+      - name: WIL features in das.dll (variant dispatcher enables 43979875 + 60814245)
         shell: pwsh
         run: |
           Invoke-WebRequest -Uri https://github.com/thebookisclosed/ViVe/releases/download/v0.3.4/ViVeTool-v0.3.4-SnapdragonArm64.zip -OutFile vive.zip
           Expand-Archive vive.zip -DestinationPath vive
+          $ids = 62693891, 62284068, 62591843, 61224778, 43979875, 61160789, 58599570, 61154041, 61154042, 49453572, 58989092, 58989177, 61161244, 48433719, 58717931, 59720933, 60176144, 60814245
           "--- before:"
-          foreach ($id in 60814245, 60176144, 58717931, 59720933) { "[$id] " + ((.\vive\ViVeTool.exe /query /id:$id 2>&1 | Select-Object -Skip 2) -join ' ') }
-          if ('${{ matrix.variant }}' -eq 'flag') {
-            .\vive\ViVeTool.exe /enable /id:60814245
+          foreach ($id in $ids) { "[$id] " + ((& .\vive\ViVeTool.exe /query /id:$id 2>&1 | Select-Object -Skip 2) -join ' ') }
+          if ('${{ matrix.variant }}' -eq 'dispatcher') {
+            & .\vive\ViVeTool.exe /enable /id:43979875
+            & .\vive\ViVeTool.exe /enable /id:60814245
             "--- after:"
-            .\vive\ViVeTool.exe /query /id:60814245
-            "changestamp: " + (.\vive\ViVeTool.exe /changestamp 2>&1 | Select-Object -Last 1)
+            foreach ($id in 43979875, 60814245) { "[$id] " + ((& .\vive\ViVeTool.exe /query /id:$id 2>&1 | Select-Object -Skip 2) -join ' ') }
+            Restart-Service DeviceAssociationService -Force
+            Restart-Service bthserv -Force
+            Start-Sleep 5
+            "DAS: " + (Get-Service DeviceAssociationService).Status + "  bthserv: " + (Get-Service bthserv).Status
           }
 
       - name: Start ETW trace
